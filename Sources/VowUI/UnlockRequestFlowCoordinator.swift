@@ -286,6 +286,14 @@ public struct UnlockRequestFlowView: View {
             Button("Approve") {
                 coordinator.decisionApproved()
             }
+
+            Button("Defer") {
+                coordinator.decisionDeferred()
+            }
+
+            Button("Deny") {
+                coordinator.decisionDenied()
+            }
         }
         .padding()
     }

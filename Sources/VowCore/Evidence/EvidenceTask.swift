@@ -14,8 +14,6 @@ public protocol EvidenceTask: Codable {
 
     /// v1: used by the app to gate transitions.
     func isCompleted(at date: Date) -> Bool
-
-    /// TODO: implement concrete tasks with HealthKit / journal completion signals.
 }
 
 public struct EvidenceTaskCompletion: Codable, Hashable {
@@ -28,4 +26,11 @@ public protocol EvidenceTaskRunner {
 
     func start(_ task: Task) async throws
     func checkCompletion(_ task: Task, at date: Date) async -> Bool
+}
+
+public enum EvidenceTaskCompletionLogic {
+    public static func isCompleted(_ completedAt: Date?, at date: Date) -> Bool {
+        guard let completedAt else { return false }
+        return completedAt <= date
+    }
 }
