@@ -11,14 +11,18 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     public let requestID: UUID
     public let target: BlockedTarget
 
+    private let onDecision: ((UnlockDecision) -> Void)?
+
     public init(
         evidenceRequired: Bool,
         requestID: UUID = UUID(),
-        target: BlockedTarget
+        target: BlockedTarget,
+        onDecision: ((UnlockDecision) -> Void)? = nil
     ) {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
         self.target = target
+        self.onDecision = onDecision
     }
 
     public func userStartedRequest() {
@@ -31,7 +35,7 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         if stateMachine.evidenceRequired {
             stateMachine.apply(.evidenceRequired)
         } else {
-            stateMachine.apply(.evidenceRequired)
+            stateMachine.apply(.evidenceCompleted)
         }
     }
 
@@ -42,10 +46,17 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
 
     public func decisionApproved() {
         stateMachine.apply(.decisionApproved)
+        onDecision?(.approved_temp_unlock)
+    }
+
+    public func decisionDeferred() {
+        stateMachine.apply(.decisionDeferred)
+        onDecision?(.deferred)
     }
 
     public func decisionDenied() {
         stateMachine.apply(.decisionDenied)
+        onDecision?(.denied)
     }
 }
 
@@ -71,6 +82,14 @@ public struct UnlockRequestFlowView: View {
 
             Button("Approve") {
                 coordinator.decisionApproved()
+            }
+
+            Button("Defer") {
+                coordinator.decisionDeferred()
+            }
+
+            Button("Deny") {
+                coordinator.decisionDenied()
             }
         }
         .padding()
