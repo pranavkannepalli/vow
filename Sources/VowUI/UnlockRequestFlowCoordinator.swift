@@ -1,4 +1,5 @@
 import VowCore
+import Foundation
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -11,6 +12,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
 
     public let requestID: UUID
     public let target: BlockedTarget
+
+    public private(set) var chaosEvidencePlan: ChaosHqEvidencePlan?
 
     private let onDecision: ((UnlockDecision) -> Void)?
     private let evidenceRunner: (@Sendable () async throws -> Bool)?
@@ -46,7 +49,39 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
         self.target = target
-        self.leaseManager = leaseManager
+        self.chaosEvidencePlan = nil
+        self.onDecision = onDecision
+    }
+
+    /// Convenience initializer that wires ChaosHQ mirror-intake into a VowCore
+    /// evidence plan. v1: this currently only sets `evidenceRequired` and stores
+    /// the plan for host-level execution/routing.
+    public init(
+        chaosMirrorIntakePayload: ChaosHqMirrorIntakePayload? = nil,
+        chaosAdapter: any ChaosHqAdapter = DefaultChaosHqAdapter(),
+        evidencePolicy: EvidencePolicy = EvidencePolicy(),
+        requestID: UUID = UUID(),
+        target: BlockedTarget,
+        onDecision: ((UnlockDecision) -> Void)? = nil
+    ) {
+        let plan: ChaosHqEvidencePlan? = chaosMirrorIntakePayload.flatMap { payload in
+            do {
+                return try chaosAdapter.mapMirrorIntake(
+                    payload,
+                    policy: evidencePolicy,
+                    unlockRequestedAt: Date()
+                )
+            } catch {
+                return nil
+            }
+        }
+
+        let evidenceRequired = !(plan?.evidenceTaskInputs.isEmpty ?? true)
+
+        self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
+        self.requestID = requestID
+        self.target = target
+        self.chaosEvidencePlan = plan
         self.onDecision = onDecision
         self.evidenceRunner = evidenceRunner
         self.frictionEngine = frictionEngine
