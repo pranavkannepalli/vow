@@ -5,7 +5,10 @@
 
 begin;
 
--- Join table linking a ChaosHQ/VowCore `tasks` row to one or more `commitments`.
+-- Ensure crypto is available for UUID generation.
+create extension if not exists pgcrypto;
+
+-- Join table linking a ChaosHQ/VowCore `tasks` row to one or more `commitments`. 
 create table if not exists public.task_commitment_links (
   id uuid primary key default gen_random_uuid(),
 
