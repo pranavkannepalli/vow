@@ -67,6 +67,7 @@ public enum NfcVerificationFactory {
     ) -> NfcRuntimeEnforcer {
         let verifier = makeVerifier(targetID: targetID, store: store, readFingerprint: cardReader)
         return NfcRuntimeEnforcer(
+            targetID: targetID,
             verifier: verifier,
             scheduler: scheduler,
             gracePeriodSeconds: gracePeriodSeconds,

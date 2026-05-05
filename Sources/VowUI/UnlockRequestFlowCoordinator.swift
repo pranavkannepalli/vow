@@ -17,6 +17,7 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
 
     private let onDecision: ((UnlockDecision) -> Void)?
     private let evidenceRunner: (@Sendable () async throws -> Bool)?
+    private let nfcEnforcer: NfcRuntimeEnforcer?
 
     private let frictionEngine: FrictionEngine
     private let frictionInputs: FrictionInputs
@@ -44,13 +45,15 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         frictionEngine: FrictionEngine = FrictionEngine(),
         frictionInputs: FrictionInputs? = nil,
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil
     ) {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
         self.target = target
         self.chaosEvidencePlan = nil
         self.onDecision = onDecision
+        self.nfcEnforcer = nfcEnforcer
     }
 
     /// Convenience initializer that wires ChaosHQ mirror-intake into a VowCore
@@ -62,7 +65,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         evidencePolicy: EvidencePolicy = EvidencePolicy(),
         requestID: UUID = UUID(),
         target: BlockedTarget,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil
     ) {
         let plan: ChaosHqEvidencePlan? = chaosMirrorIntakePayload.flatMap { payload in
             do {
@@ -83,6 +87,7 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.target = target
         self.chaosEvidencePlan = plan
         self.onDecision = onDecision
+        self.nfcEnforcer = nfcEnforcer
         self.evidenceRunner = evidenceRunner
         self.frictionEngine = frictionEngine
 
@@ -114,7 +119,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         frictionEngine: FrictionEngine = FrictionEngine(),
         frictionInputs: FrictionInputs? = nil,
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil
     ) -> UnlockRequestFlowCoordinator {
         let coordinator = UnlockRequestFlowCoordinator(
             evidenceRequired: snapshot.evidenceRequired,
@@ -125,7 +131,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
             frictionEngine: frictionEngine,
             frictionInputs: frictionInputs,
             evidenceRunner: evidenceRunner,
-            onDecision: onDecision
+            onDecision: onDecision,
+            nfcEnforcer: nfcEnforcer
         )
 
         coordinator.stateMachine = UnlockRequestStateMachine(
@@ -261,6 +268,32 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     }
 
     public func decisionApproved() {
+        Task { [weak self] in
+            guard let self else { return }
+            await self.completeDecisionApprovedAsync()
+        }
+    }
+
+    @MainActor
+    private func completeDecisionApprovedAsync() async {
+        // NFC failure should fail-safe deny unlock.
+        guard stateMachine.state == .aiReviewed else { return }
+
+        if let nfcEnforcer {
+            let result = await nfcEnforcer.verify(requestID: requestID)
+            switch result {
+            case .verified:
+                break
+
+            case .notVerified:
+                let prior = stateMachine.state
+                stateMachine.apply(.decisionDenied)
+                guard stateMachine.state != prior else { return }
+                onDecision?(.denied)
+                return
+            }
+        }
+
         let prior = stateMachine.state
         stateMachine.apply(.decisionApproved)
         guard stateMachine.state != prior else { return }
