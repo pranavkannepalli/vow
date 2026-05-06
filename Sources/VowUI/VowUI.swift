@@ -7,12 +7,16 @@ public enum VowUI {
     public static func shieldInterceptionView(
         target: BlockedTarget,
         evidenceRequired: Bool,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        onNfcViolation: ((NfcViolation) -> Void)? = nil
     ) -> ShieldInterceptionView {
         ShieldInterceptionView(
             target: target,
             evidenceRequired: evidenceRequired,
-            onDecision: onDecision
+            onDecision: onDecision,
+            nfcEnforcer: nfcEnforcer,
+            onNfcViolation: onNfcViolation
         )
     }
 }

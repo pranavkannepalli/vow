@@ -345,6 +345,10 @@ public struct TodayDashboardView: View {
             Text("Buttons are host-wired—your app will persist, verify evidence, and route flows.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            Text("Privacy: life logging is local-first (export/delete from your host app).")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }

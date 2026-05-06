@@ -27,6 +27,10 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     private var evidenceWork: Task<Void, Never>?
     private var frictionEndsAt: Date?
 
+    private let nfcEnforcer: NfcRuntimeEnforcer?
+    private let onNfcViolation: ((NfcViolation) -> Void)?
+
+
     public struct UnlockRequestFlowSnapshot: Codable {
         public var requestID: UUID
         public var target: BlockedTarget
@@ -46,7 +50,9 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         frictionInputs: FrictionInputs? = nil,
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
         funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        onNfcViolation: ((NfcViolation) -> Void)? = nil
     ) {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
@@ -68,6 +74,9 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.frictionInputs = frictionInputs ?? FrictionInputs(tier: computedTier)
         self.approvedDurationSeconds = approvedDurationSeconds
 
+        self.nfcEnforcer = nfcEnforcer
+        self.onNfcViolation = onNfcViolation
+
         self.funnelMetricsRecorder = funnelMetricsRecorder
     }
 
@@ -81,7 +90,9 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         requestID: UUID = UUID(),
         target: BlockedTarget,
         funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil,
-        onDecision: ((UnlockDecision) -> Void)? = nil
+        onDecision: ((UnlockDecision) -> Void)? = nil,
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        onNfcViolation: ((NfcViolation) -> Void)? = nil
     ) {
         let plan: ChaosHqEvidencePlan? = chaosMirrorIntakePayload.flatMap { payload in
             do {
@@ -115,6 +126,9 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         }()
         self.frictionInputs = FrictionInputs(tier: computedTier)
         self.approvedDurationSeconds = 300
+
+        self.nfcEnforcer = nfcEnforcer
+        self.onNfcViolation = onNfcViolation
 
         self.funnelMetricsRecorder = funnelMetricsRecorder
     }
@@ -305,9 +319,52 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     }
 
     public func decisionApproved() {
-        guard applyAndRecord(.decisionApproved) else { return }
+        Task { await decisionApprovedAsync() }
+    }
 
+    private func decisionApprovedAsync() async {
         let now = Date()
+
+        if let nfcEnforcer {
+            do {
+                let outcome = try await nfcEnforcer.verify(targetID: target.id, requestID: requestID, at: now)
+
+                switch outcome {
+                case .verified:
+                    guard applyAndRecord(.decisionApproved) else { return }
+                    grantLease(now: now)
+                    onDecision?(.approved_temp_unlock)
+
+                case .notVerified(let violation):
+                    _ = applyAndRecord(.decisionDenied)
+                    onNfcViolation?(violation)
+                    onDecision?(.denied)
+                }
+            } catch {
+                // Fail safe: deny unlock.
+                let graceEndsAt = now.addingTimeInterval(nfcEnforcer.gracePeriodSeconds)
+                let violation = NfcViolation(
+                    targetID: target.id,
+                    requestID: requestID,
+                    detectedAt: now,
+                    graceEndsAt: graceEndsAt,
+                    alarmAt: graceEndsAt
+                )
+
+                _ = applyAndRecord(.decisionDenied)
+                onNfcViolation?(violation)
+                onDecision?(.denied)
+            }
+
+            return
+        }
+
+        guard applyAndRecord(.decisionApproved) else { return }
+        grantLease(now: now)
+        onDecision?(.approved_temp_unlock)
+    }
+
+    private func grantLease(now: Date) {
         let lease = UnlockLease(
             targetID: target.id,
             startAt: now,
@@ -316,7 +373,6 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
             requestID: requestID
         )
         _ = leaseManager.grant(lease, now: now)
-        onDecision?(.approved_temp_unlock)
     }
 
     public func decisionDeferred() {
