@@ -22,13 +22,18 @@ public struct EvidencePolicy: Codable, Hashable {
     /// If false, any focus interruption invalidates completion.
     public var focusAllowsPause: Bool
 
+    /// How long after local day flips (after midnight) a completion still
+    /// counts for the unlock request’s atomic-habit day.
+    public var dailyGracePeriodSeconds: TimeInterval
+
     public init(
         stepsTargetDelta: Int = 1200,
         focusTargetSeconds: TimeInterval = 20 * 60,
         journalMinCharacters: Int = 200,
         journalMinMeaningfulTokenCount: Int? = nil,
         journalMaxSpamRepetitionRatio: Double = 0.35,
-        focusAllowsPause: Bool = false
+        focusAllowsPause: Bool = false,
+        dailyGracePeriodSeconds: TimeInterval = 2 * 60 * 60
     ) {
         self.stepsTargetDelta = stepsTargetDelta
         self.focusTargetSeconds = focusTargetSeconds
@@ -36,6 +41,7 @@ public struct EvidencePolicy: Codable, Hashable {
         self.journalMinMeaningfulTokenCount = journalMinMeaningfulTokenCount
         self.journalMaxSpamRepetitionRatio = journalMaxSpamRepetitionRatio
         self.focusAllowsPause = focusAllowsPause
+        self.dailyGracePeriodSeconds = dailyGracePeriodSeconds
     }
 }
 

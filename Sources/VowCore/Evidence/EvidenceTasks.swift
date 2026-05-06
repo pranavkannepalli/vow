@@ -10,6 +10,10 @@ public final class StepsEvidenceTask: EvidenceTask, @unchecked Sendable {
     public let unlockRequestedAt: Date
     public let targetStepsDelta: Int
 
+    /// How long after midnight (after the local day flips) a completion still
+    /// counts for the unlock request’s atomic-habit day.
+    public let dailyGracePeriodSeconds: TimeInterval
+
     public var type: EvidenceTaskType { .steps }
 
     public init(
@@ -17,17 +21,28 @@ public final class StepsEvidenceTask: EvidenceTask, @unchecked Sendable {
         createdAt: Date = Date(),
         completedAt: Date? = nil,
         unlockRequestedAt: Date,
-        targetStepsDelta: Int
+        targetStepsDelta: Int,
+        dailyGracePeriodSeconds: TimeInterval = 2 * 60 * 60
     ) {
         self.id = id
         self.createdAt = createdAt
         self.completedAt = completedAt
         self.unlockRequestedAt = unlockRequestedAt
         self.targetStepsDelta = targetStepsDelta
+        self.dailyGracePeriodSeconds = dailyGracePeriodSeconds
     }
 
     public func isCompleted(at date: Date) -> Bool {
-        EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date)
+        guard let completedAt else { return false }
+        guard EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date) else { return false }
+
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: unlockRequestedAt)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+        let graceUntil = nextDay.addingTimeInterval(dailyGracePeriodSeconds)
+
+        // Completion beyond grace doesn't count for this unlock.
+        return completedAt < graceUntil
     }
 }
 
@@ -40,6 +55,10 @@ public final class FocusTimerEvidenceTask: EvidenceTask, @unchecked Sendable {
     public let targetSeconds: TimeInterval
     public let allowsPause: Bool
 
+    /// How long after midnight (after the local day flips) a completion still
+    /// counts for the unlock request’s atomic-habit day.
+    public let dailyGracePeriodSeconds: TimeInterval
+
     public var type: EvidenceTaskType { .focusTimer }
 
     public init(
@@ -48,7 +67,8 @@ public final class FocusTimerEvidenceTask: EvidenceTask, @unchecked Sendable {
         completedAt: Date? = nil,
         unlockRequestedAt: Date,
         targetSeconds: TimeInterval,
-        allowsPause: Bool
+        allowsPause: Bool,
+        dailyGracePeriodSeconds: TimeInterval = 2 * 60 * 60
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -56,10 +76,19 @@ public final class FocusTimerEvidenceTask: EvidenceTask, @unchecked Sendable {
         self.unlockRequestedAt = unlockRequestedAt
         self.targetSeconds = targetSeconds
         self.allowsPause = allowsPause
+        self.dailyGracePeriodSeconds = dailyGracePeriodSeconds
     }
 
     public func isCompleted(at date: Date) -> Bool {
-        EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date)
+        guard let completedAt else { return false }
+        guard EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date) else { return false }
+
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: unlockRequestedAt)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+        let graceUntil = nextDay.addingTimeInterval(dailyGracePeriodSeconds)
+
+        return completedAt < graceUntil
     }
 }
 
@@ -73,6 +102,10 @@ public final class JournalEvidenceTask: EvidenceTask, @unchecked Sendable {
     public let minMeaningfulTokenCount: Int?
     public let maxSpamRepetitionRatio: Double
 
+    /// How long after midnight (after the local day flips) a completion still
+    /// counts for the unlock request’s atomic-habit day.
+    public let dailyGracePeriodSeconds: TimeInterval
+
     public var type: EvidenceTaskType { .journal }
 
     public init(
@@ -82,7 +115,8 @@ public final class JournalEvidenceTask: EvidenceTask, @unchecked Sendable {
         unlockRequestedAt: Date,
         minCharacters: Int,
         minMeaningfulTokenCount: Int? = nil,
-        maxSpamRepetitionRatio: Double
+        maxSpamRepetitionRatio: Double,
+        dailyGracePeriodSeconds: TimeInterval = 2 * 60 * 60
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -91,10 +125,19 @@ public final class JournalEvidenceTask: EvidenceTask, @unchecked Sendable {
         self.minCharacters = minCharacters
         self.minMeaningfulTokenCount = minMeaningfulTokenCount
         self.maxSpamRepetitionRatio = maxSpamRepetitionRatio
+        self.dailyGracePeriodSeconds = dailyGracePeriodSeconds
     }
 
     public func isCompleted(at date: Date) -> Bool {
-        EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date)
+        guard let completedAt else { return false }
+        guard EvidenceTaskCompletionLogic.isCompleted(completedAt, at: date) else { return false }
+
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: unlockRequestedAt)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+        let graceUntil = nextDay.addingTimeInterval(dailyGracePeriodSeconds)
+
+        return completedAt < graceUntil
     }
 }
 
@@ -118,6 +161,13 @@ public struct StepsEvidenceTaskRunner<Provider: StepsEvidenceDataSource>: Eviden
         do {
             let stepsDelta = try await provider.stepsDelta(from: task.unlockRequestedAt, until: date)
             if stepsDelta >= task.targetStepsDelta {
+                let calendar = Calendar.current
+                let targetDay = calendar.startOfDay(for: task.unlockRequestedAt)
+                let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+                let graceUntil = nextDay.addingTimeInterval(task.dailyGracePeriodSeconds)
+
+                guard date < graceUntil else { return false }
+
                 task.completedAt = date
                 return true
             }
@@ -151,6 +201,13 @@ public struct FocusTimerEvidenceTaskRunner<Provider: FocusEvidenceDataSource>: E
                 let interrupted = try await provider.hasFocusInterruption(from: task.unlockRequestedAt, until: date)
                 guard !interrupted else { return false }
             }
+
+            let calendar = Calendar.current
+            let targetDay = calendar.startOfDay(for: task.unlockRequestedAt)
+            let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+            let graceUntil = nextDay.addingTimeInterval(task.dailyGracePeriodSeconds)
+
+            guard date < graceUntil else { return false }
 
             task.completedAt = date
             return true
@@ -188,6 +245,13 @@ public struct JournalEvidenceTaskRunner<Provider: JournalEvidenceDataSource>: Ev
                 guard spamRatio <= task.maxSpamRepetitionRatio else { return false }
             }
 
+            let calendar = Calendar.current
+            let targetDay = calendar.startOfDay(for: task.unlockRequestedAt)
+            let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+            let graceUntil = nextDay.addingTimeInterval(task.dailyGracePeriodSeconds)
+
+            guard date < graceUntil else { return false }
+
             task.completedAt = date
             return true
         } catch {
@@ -200,14 +264,19 @@ public struct JournalEvidenceTaskRunner<Provider: JournalEvidenceDataSource>: Ev
 
 public enum EvidenceTaskBuilder {
     public static func makeStepsTask(unlockRequestedAt: Date, policy: EvidencePolicy) -> StepsEvidenceTask {
-        StepsEvidenceTask(unlockRequestedAt: unlockRequestedAt, targetStepsDelta: policy.stepsTargetDelta)
+        StepsEvidenceTask(
+            unlockRequestedAt: unlockRequestedAt,
+            targetStepsDelta: policy.stepsTargetDelta,
+            dailyGracePeriodSeconds: policy.dailyGracePeriodSeconds
+        )
     }
 
     public static func makeFocusTask(unlockRequestedAt: Date, policy: EvidencePolicy) -> FocusTimerEvidenceTask {
         FocusTimerEvidenceTask(
             unlockRequestedAt: unlockRequestedAt,
             targetSeconds: policy.focusTargetSeconds,
-            allowsPause: policy.focusAllowsPause
+            allowsPause: policy.focusAllowsPause,
+            dailyGracePeriodSeconds: policy.dailyGracePeriodSeconds
         )
     }
 
@@ -216,7 +285,8 @@ public enum EvidenceTaskBuilder {
             unlockRequestedAt: unlockRequestedAt,
             minCharacters: policy.journalMinCharacters,
             minMeaningfulTokenCount: policy.journalMinMeaningfulTokenCount,
-            maxSpamRepetitionRatio: policy.journalMaxSpamRepetitionRatio
+            maxSpamRepetitionRatio: policy.journalMaxSpamRepetitionRatio,
+            dailyGracePeriodSeconds: policy.dailyGracePeriodSeconds
         )
     }
 }

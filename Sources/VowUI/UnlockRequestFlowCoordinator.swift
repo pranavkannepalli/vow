@@ -18,6 +18,10 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     private let onDecision: ((UnlockDecision) -> Void)?
     private let evidenceRunner: (@Sendable () async throws -> Bool)?
 
+    /// True when the coordinator was initialized with a host-provided evidence runner.
+    /// When false, the UI stays in constraints mode and requires manual/host completion.
+    public var evidenceRunnerProvided: Bool { evidenceRunner != nil }
+
     private let frictionEngine: FrictionEngine
     private let frictionInputs: FrictionInputs
     private let approvedDurationSeconds: TimeInterval
@@ -251,12 +255,14 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         evidenceWork = Task { [weak self] in
             guard let self else { return }
             do {
-                let completed: Bool
-                if let evidenceRunner = self.evidenceRunner {
-                    completed = try await evidenceRunner()
-                } else {
-                    completed = true
+                guard let evidenceRunner = self.evidenceRunner else {
+                    // Constraints mode: host didn't provide an automatic evidence runner.
+                    // Leave the state machine in `.evidencePending` so the UI can explain
+                    // what “completion” means and let the user (or host) advance.
+                    return
                 }
+
+                let completed = try await evidenceRunner()
 
                 if completed {
                     self.markEvidenceCompleted()
@@ -418,6 +424,22 @@ public struct UnlockRequestFlowView: View {
                 Text("Friction remaining: \(Int(coordinator.frictionSecondsRemaining))s")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+
+            if coordinator.stateMachine.state == .evidencePending && !coordinator.evidenceRunnerProvided {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Access is locked")
+                        .font(.headline)
+                    Text("Complete your atomic habit to unlock this request. Completion counts within the grace window (~2 hours after midnight).")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("I completed it") {
+                        coordinator.markEvidenceCompleted()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.vertical, 4)
             }
 
             Button("Start") {
