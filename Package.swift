@@ -19,6 +19,11 @@ let package = Package(
             name: "VowUI",
             dependencies: ["VowCore"],
             path: "Sources/VowUI"
+        ),
+        .testTarget(
+            name: "VowCoreTests",
+            dependencies: ["VowCore"],
+            path: "Tests/VowCoreTests"
         )
     ]
 )

@@ -15,6 +15,9 @@ public struct ShieldInterceptionView: View {
     public let onDecision: ((UnlockDecision) -> Void)?
     private let nfcEnforcer: NfcRuntimeEnforcer?
 
+    public let nfcEnforcer: NfcRuntimeEnforcer?
+    public let onNfcViolation: ((NfcViolation) -> Void)?
+
     @State private var mode: Mode = .shield
 
     public init(

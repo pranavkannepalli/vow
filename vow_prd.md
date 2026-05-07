@@ -322,6 +322,18 @@ Clamp to `0...100`.
 - score breakdown visible to user
 - score inputs must be inspectable, not opaque
 
+### Competitive feature alignment (beha(rd), echoaicoach, Fabulous)
+These products tend to converge on three “best-in-class” loops:
+- Life tracking: a lightweight daily dashboard with transparent score breakdown + visible progress.
+- Atomic habit: a next-action template that turns “I should do X” into a small, verifiable micro-commitment.
+- Screen control: a budgeted / mode-based approach (focus vs recovery) rather than only hard blockers.
+
+### MVP plan for high-signal founders
+For v2, we’ll ship the minimum version of those loops:
+1) Daily dashboard + explainability: surface the score breakdown and today’s top contributing factors.
+2) Atomic habit card: one “tiny next action” suggestion per unlock/review cycle, optionally tied to an evidence task.
+3) Screen-control modes: define 2–3 simple modes that map to friction/evidence thresholds (e.g., Focus=high friction, Recovery=slightly lower friction but more logging). 
+
 ## 6.9 Relapse Detection
 
 ### Functional requirements
