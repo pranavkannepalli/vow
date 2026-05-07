@@ -13,6 +13,7 @@ public struct ShieldInterceptionView: View {
     public let target: BlockedTarget
     public let evidenceRequired: Bool
     public let onDecision: ((UnlockDecision) -> Void)?
+    private let nfcEnforcer: NfcRuntimeEnforcer?
 
     public let nfcEnforcer: NfcRuntimeEnforcer?
     public let onNfcViolation: ((NfcViolation) -> Void)?
@@ -23,14 +24,12 @@ public struct ShieldInterceptionView: View {
         target: BlockedTarget,
         evidenceRequired: Bool,
         onDecision: ((UnlockDecision) -> Void)? = nil,
-        nfcEnforcer: NfcRuntimeEnforcer? = nil,
-        onNfcViolation: ((NfcViolation) -> Void)? = nil
+        nfcEnforcer: NfcRuntimeEnforcer? = nil
     ) {
         self.target = target
         self.evidenceRequired = evidenceRequired
         self.onDecision = onDecision
         self.nfcEnforcer = nfcEnforcer
-        self.onNfcViolation = onNfcViolation
     }
 
     public var body: some View {
@@ -49,8 +48,7 @@ public struct ShieldInterceptionView: View {
                 evidenceRequired: evidenceRequired,
                 target: target,
                 onDecision: onDecision,
-                nfcEnforcer: nfcEnforcer,
-                onNfcViolation: onNfcViolation
+                nfcEnforcer: nfcEnforcer
             )
 
             UnlockRequestFlowView(coordinator: coordinator)

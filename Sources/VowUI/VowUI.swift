@@ -8,15 +8,13 @@ public enum VowUI {
         target: BlockedTarget,
         evidenceRequired: Bool,
         onDecision: ((UnlockDecision) -> Void)? = nil,
-        nfcEnforcer: NfcRuntimeEnforcer? = nil,
-        onNfcViolation: ((NfcViolation) -> Void)? = nil
+        nfcEnforcer: NfcRuntimeEnforcer? = nil
     ) -> ShieldInterceptionView {
         ShieldInterceptionView(
             target: target,
             evidenceRequired: evidenceRequired,
             onDecision: onDecision,
-            nfcEnforcer: nfcEnforcer,
-            onNfcViolation: onNfcViolation
+            nfcEnforcer: nfcEnforcer
         )
     }
 }
