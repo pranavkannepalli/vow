@@ -58,3 +58,28 @@ Recorded events cover: `requestCreated`, `frictionTimerStarted`, `evidenceRequir
 - Automated unit tests for core state machine and friction/evidence logic added under `VowCoreTests`.
 - Funnel instrumentation interface + coordinator event recording added.
 - This document updated with QA matrix + rollout stages.
+
+## Family Controls entitlement/provisioning verification (real-device)
+This is the safe “capability gate” for enabling Screen Time / Family Controls flows.
+
+### Host-app behavior
+- `ShieldConfigurationController.setPolicy(_:)` is a no-op unless the runtime verification report is `isReady == true`.
+- `isReady` requires:
+  - Family Controls authorization appears approved
+  - all required Screen Time extensions (best-effort bundle presence) are found in the host app’s built-in plug-ins
+
+### How to verify on a real device
+1) **Enable capabilities everywhere**
+   - In Xcode: for the iOS app target and every required Screen Time extension target, enable the **Family Controls** capability/entitlement.
+2) **Regenerate provisioning profiles after entitlement changes**
+   - Xcode: **Product → Clean Build Folder**
+   - Update provisioning profiles for the correct Team/device set
+   - (If needed) delete DerivedData and rebuild
+3) **Install via Xcode onto a registered device**
+   - Do not rely on simulator for this check.
+4) **Check the runtime verification report**
+   - Wire `ShieldConfigurationController(requiredExtensionBundleIdentifiers: [...])` with the expected extension bundle identifiers.
+   - On the device, log the result of `FamilyControlsCapabilityGate.verify(...)` (or expose it in a debug view) and confirm `isReady == true` before applying the shield policy.
+
+Notes:
+- If `isReady` is `false`, the app should avoid entering partially-enabled states (i.e., it should not apply shield configuration / should fail closed).
