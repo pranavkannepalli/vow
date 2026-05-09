@@ -46,7 +46,12 @@ public struct UnlockLeaseManager: Codable, Hashable {
     /// same `targetID`, the lease is merged by extending `expiresAt` to the
     /// latest expiry. The lease `id` and original `startAt` are preserved.
     @discardableResult
-    public mutating func grant(_ lease: UnlockLease, mergeActive: Bool = true, now: Date = Date()) -> UnlockLease {
+    public mutating func grant(
+        _ lease: UnlockLease,
+        mergeActive: Bool = true,
+        now: Date = Date(),
+        record: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
+    ) -> UnlockLease {
         if mergeActive, let idx = leases.firstIndex(where: { $0.targetID == lease.targetID && $0.isActive(at: now) }) {
             let existing = leases[idx]
             let extendedExpiresAt = max(existing.expiresAt, lease.expiresAt)
@@ -59,9 +64,40 @@ public struct UnlockLeaseManager: Codable, Hashable {
                 requestID: lease.requestID
             )
             leases[idx] = merged
+
+            if merged.isActive(at: now) {
+                activeLeaseIDs.insert(merged.id)
+            }
+
+            record?(UnlockLeaseLifecycleEvent(
+                type: .leaseExtended,
+                occurredAt: now,
+                requestID: merged.requestID,
+                leaseID: merged.id,
+                targetID: merged.targetID,
+                startAt: merged.startAt,
+                expiresAt: merged.expiresAt,
+                reason: merged.reason
+            ))
+
             return merged
         } else {
             leases.append(lease)
+            if lease.isActive(at: now) {
+                activeLeaseIDs.insert(lease.id)
+            }
+
+            record?(UnlockLeaseLifecycleEvent(
+                type: .leaseGranted,
+                occurredAt: now,
+                requestID: lease.requestID,
+                leaseID: lease.id,
+                targetID: lease.targetID,
+                startAt: lease.startAt,
+                expiresAt: lease.expiresAt,
+                reason: lease.reason
+            ))
+
             return lease
         }
     }
@@ -71,12 +107,43 @@ public struct UnlockLeaseManager: Codable, Hashable {
     /// - Removes expired leases from `leases`.
     /// - Returns the targetIDs whose leases newly expired since the last
     ///   reconciliation, so callers can reshield those targets.
-    public mutating func reconcileExpiry(now: Date = Date()) -> [UUID] {
+    ///
+    /// If `record` is provided, emits privacy-safe instrumentation events for:
+    /// - `leaseExpired` (per expired lease)
+    /// - `leaseReshielded` (aggregated per reconciliation call)
+    public mutating func reconcileExpiry(
+        now: Date = Date(),
+        record: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
+    ) -> [UUID] {
         let stillActive = leases.filter { $0.isActive(at: now) }
         let stillActiveIDs = Set(stillActive.map { $0.id })
 
         let newlyExpiredIDs = activeLeaseIDs.subtracting(stillActiveIDs)
-        let reshieldTargetIDs = Set(leases.filter { newlyExpiredIDs.contains($0.id) }.map { $0.targetID })
+        let newlyExpiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
+        let reshieldTargetIDs = Set(newlyExpiredLeases.map { $0.targetID })
+
+        if !newlyExpiredLeases.isEmpty {
+            // Emit one event per expired lease.
+            for lease in newlyExpiredLeases {
+                record?(UnlockLeaseLifecycleEvent(
+                    type: .leaseExpired,
+                    occurredAt: now,
+                    requestID: lease.requestID,
+                    leaseID: lease.id,
+                    targetID: lease.targetID,
+                    startAt: lease.startAt,
+                    expiresAt: lease.expiresAt,
+                    reason: lease.reason
+                ))
+            }
+
+            record?(UnlockLeaseLifecycleEvent(
+                type: .leaseReshielded,
+                occurredAt: now,
+                reshieldedTargetIDs: Array(reshieldTargetIDs),
+                expiredLeaseIDs: newlyExpiredLeases.map { $0.id }
+            ))
+        }
 
         leases = stillActive
         activeLeaseIDs = stillActiveIDs
