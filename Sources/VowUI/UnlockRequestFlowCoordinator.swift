@@ -24,8 +24,10 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     private let frictionInputs: FrictionInputs
     private let approvedDurationSeconds: TimeInterval
 
-    private let funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)?
+    private let funnelMetricsRecorder: any RequestFunnelMetricsRecorder
     private let leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)?
+
+    private var leaseReconciliationTask: Task<Void, Never>?
 
     private var frictionTimerTask: Task<Void, Never>?
     private var evidenceWork: Task<Void, Never>?
@@ -51,7 +53,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
         onDecision: ((UnlockDecision) -> Void)? = nil,
         nfcEnforcer: NfcRuntimeEnforcer? = nil,
-        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
+        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil,
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil
     ) {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
@@ -75,8 +78,10 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.frictionInputs = frictionInputs ?? FrictionInputs(tier: computedTier)
 
         self.approvedDurationSeconds = approvedDurationSeconds
-        self.funnelMetricsRecorder = nil
+        self.funnelMetricsRecorder = funnelMetricsRecorder ?? NoopRequestFunnelMetricsRecorder()
         self.leaseLifecycleRecorder = leaseLifecycleRecorder
+
+        scheduleLeaseReconciliationIfNeeded()
     }
 
     /// Convenience initializer that wires ChaosHQ mirror-intake into a VowCore
@@ -89,7 +94,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         target: BlockedTarget,
         onDecision: ((UnlockDecision) -> Void)? = nil,
         nfcEnforcer: NfcRuntimeEnforcer? = nil,
-        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
+        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil,
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil
     ) {
         let plan: ChaosHqEvidencePlan? = chaosMirrorIntakePayload.flatMap { payload in
             do {
@@ -127,8 +133,10 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.frictionEngine = FrictionEngine()
         self.frictionInputs = FrictionInputs(tier: computedTier)
         self.approvedDurationSeconds = 300
-        self.funnelMetricsRecorder = nil
+        self.funnelMetricsRecorder = funnelMetricsRecorder ?? NoopRequestFunnelMetricsRecorder()
         self.leaseLifecycleRecorder = leaseLifecycleRecorder
+
+        scheduleLeaseReconciliationIfNeeded()
     }
 
     public func snapshot() -> UnlockRequestFlowSnapshot {
@@ -143,7 +151,6 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     }
 
     private func record(_ event: UnlockRequestEvent) {
-        guard let funnelMetricsRecorder else { return }
         funnelMetricsRecorder.record(
             event,
             requestID: requestID,
@@ -172,7 +179,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
         onDecision: ((UnlockDecision) -> Void)? = nil,
         nfcEnforcer: NfcRuntimeEnforcer? = nil,
-        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
+        leaseLifecycleRecorder: ((UnlockLeaseLifecycleEvent) -> Void)? = nil,
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil
     ) -> UnlockRequestFlowCoordinator {
         let coordinator = UnlockRequestFlowCoordinator(
             evidenceRequired: snapshot.evidenceRequired,
@@ -185,7 +193,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
             evidenceRunner: evidenceRunner,
             onDecision: onDecision,
             nfcEnforcer: nfcEnforcer,
-            leaseLifecycleRecorder: leaseLifecycleRecorder
+            leaseLifecycleRecorder: leaseLifecycleRecorder,
+            funnelMetricsRecorder: funnelMetricsRecorder
         )
 
         coordinator.stateMachine = UnlockRequestStateMachine(
@@ -195,6 +204,7 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         coordinator.frictionEndsAt = snapshot.frictionEndsAt
         coordinator.frictionSecondsRemaining = snapshot.frictionEndsAt.map { max(0, $0.timeIntervalSinceNow) } ?? 0
         coordinator.startAppropriateWorkAfterRestore()
+        coordinator.scheduleLeaseReconciliationIfNeeded()
         return coordinator
     }
 
@@ -350,6 +360,33 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
             requestID: requestID
         )
         _ = leaseManager.grant(lease, now: now, record: leaseLifecycleRecorder)
+        scheduleLeaseReconciliationIfNeeded(now: now)
+    }
+
+    private func scheduleLeaseReconciliationIfNeeded(now: Date = Date()) {
+        leaseReconciliationTask?.cancel()
+        leaseReconciliationTask = nil
+
+        let nextExpiration = leaseManager.leases
+            .compactMap { $0.expiresAt }
+            .filter { $0 > now }
+            .min()
+
+        guard let nextExpiration else { return }
+
+        let delay = max(0, nextExpiration.timeIntervalSince(now))
+        let nanos = UInt64(delay * 1_000_000_000)
+
+        leaseReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: nanos)
+            await self.reconcileLeaseExpiryAndReschedule(now: Date())
+        }
+    }
+
+    private func reconcileLeaseExpiryAndReschedule(now: Date) {
+        _ = leaseManager.reconcileExpiry(now: now, record: leaseLifecycleRecorder)
+        scheduleLeaseReconciliationIfNeeded(now: now)
     }
 
     public func decisionDeferred() {
