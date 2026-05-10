@@ -52,7 +52,9 @@ public struct UnlockLeaseManager: Codable, Hashable {
         now: Date = Date(),
         record: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
     ) -> UnlockLease {
-        if mergeActive, let idx = leases.firstIndex(where: { $0.targetID == lease.targetID && $0.isActive(at: now) }) {
+        if mergeActive,
+           let idx = leases.firstIndex(where: { $0.targetID == lease.targetID && $0.isActive(at: now) }),
+           lease.isActive(at: now) {
             let existing = leases[idx]
             let extendedExpiresAt = max(existing.expiresAt, lease.expiresAt)
             let merged = UnlockLease(
