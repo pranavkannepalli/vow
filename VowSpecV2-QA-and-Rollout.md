@@ -31,6 +31,32 @@ End-to-end validation of the v1 unlock-request state machine and its host-facing
 
 Recorded events cover: `requestCreated`, `frictionTimerStarted`, `evidenceRequired`, `evidenceCompleted`, `aiReviewed`, and decision/session/review events when they transition the state machine.
 
+### Lease lifecycle instrumentation (temporary unlock leases)
+Host/mobile layer can opt into privacy-safe instrumentation for temporary unlock leases.
+
+#### Added API / hooks
+- `VowCore.UnlockLeaseLifecycleEventType` + `VowCore.UnlockLeaseLifecycleEvent`
+- `UnlockLeaseManager.grant(..., record:)` emits:
+  - `leaseGranted` when a new active lease is granted
+  - `leaseExtended` when `mergeActive` extends an existing active lease
+- `UnlockLeaseManager.reconcileExpiry(..., record:)` emits:
+  - `leaseExpired` once per newly-expired lease
+  - `leaseReshielded` once per reconciliation call (aggregated)
+- `UnlockRequestFlowCoordinator` accepts an optional `leaseLifecycleRecorder` to auto-record grant/extend events when it grants leases.
+
+#### Event fields (and privacy notes)
+All correlation fields are UUIDs.
+- `type`, `occurredAt`
+- `requestID`, `leaseID`, `targetID` (UUID correlation keys; not personal data)
+- `startAt`, `expiresAt` (timestamps for debugging)
+- `reason` (coarse, privacy-safe unlock rationale; **host should avoid sensitive personal/child data**)
+- `expiredLeaseIDs`, `reshieldedTargetIDs` (UUID arrays; aggregated reconciliation details)
+
+#### What to test
+- Grant/extend events fire exactly once per lease grant/merge.
+- Expiry/reshield events fire only for newly expired leases on reconciliation.
+- `reason` is coarse / privacy-safe when provided.
+
 ## Performance checks
 - `FrictionEngine.seconds(for:)` should behave as constant-time and return the policy lower bounds.
 - (Unit tests) performance sanity via `XCTest.measure` + correctness assertions.
@@ -58,3 +84,28 @@ Recorded events cover: `requestCreated`, `frictionTimerStarted`, `evidenceRequir
 - Automated unit tests for core state machine and friction/evidence logic added under `VowCoreTests`.
 - Funnel instrumentation interface + coordinator event recording added.
 - This document updated with QA matrix + rollout stages.
+
+## Family Controls entitlement/provisioning verification (real-device)
+This is the safe “capability gate” for enabling Screen Time / Family Controls flows.
+
+### Host-app behavior
+- `ShieldConfigurationController.setPolicy(_:)` is a no-op unless the runtime verification report is `isReady == true`.
+- `isReady` requires:
+  - Family Controls authorization appears approved
+  - all required Screen Time extensions (best-effort bundle presence) are found in the host app’s built-in plug-ins
+
+### How to verify on a real device
+1) **Enable capabilities everywhere**
+   - In Xcode: for the iOS app target and every required Screen Time extension target, enable the **Family Controls** capability/entitlement.
+2) **Regenerate provisioning profiles after entitlement changes**
+   - Xcode: **Product → Clean Build Folder**
+   - Update provisioning profiles for the correct Team/device set
+   - (If needed) delete DerivedData and rebuild
+3) **Install via Xcode onto a registered device**
+   - Do not rely on simulator for this check.
+4) **Check the runtime verification report**
+   - Wire `ShieldConfigurationController(requiredExtensionBundleIdentifiers: [...])` with the expected extension bundle identifiers.
+   - On the device, log the result of `FamilyControlsCapabilityGate.verify(...)` (or expose it in a debug view) and confirm `isReady == true` before applying the shield policy.
+
+Notes:
+- If `isReady` is `false`, the app should avoid entering partially-enabled states (i.e., it should not apply shield configuration / should fail closed).
