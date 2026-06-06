@@ -67,4 +67,17 @@ final class FamilyControlsCapabilityGateTests: XCTestCase {
 
         XCTAssertEqual(Set(missing), Set(["com.example.ShieldActionExtension"]))
     }
+
+    func test_computeMissingExtensions_dedupesRequiredIdentifiers() {
+        let required = ["com.example.A", "com.example.A", "com.example.B"]
+        let present: Set<String> = []
+
+        let missing = FamilyControlsCapabilityGate.computeMissingExtensions(
+            requiredExtensionBundleIdentifiers: required,
+            presentExtensionBundleIdentifiers: present
+        )
+
+        XCTAssertEqual(Set(missing), Set(["com.example.A", "com.example.B"]))
+        XCTAssertEqual(missing.count, 2)
+    }
 }

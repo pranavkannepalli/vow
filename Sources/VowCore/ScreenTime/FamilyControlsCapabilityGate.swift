@@ -136,7 +136,12 @@ extension FamilyControlsCapabilityGate {
         requiredExtensionBundleIdentifiers: [String],
         presentExtensionBundleIdentifiers: Set<String>
     ) -> [String] {
-        requiredExtensionBundleIdentifiers.filter { !presentExtensionBundleIdentifiers.contains($0) }
+        // Treat “required” as a set: duplicates in the host-provided list should not
+        // cause duplicate “missing” entries.
+        let required = Set(requiredExtensionBundleIdentifiers)
+        return required
+            .filter { !presentExtensionBundleIdentifiers.contains($0) }
+            .sorted()
     }
 
     /// Best-effort enumeration of extension bundle identifiers from the host app's built-in plug-ins.
