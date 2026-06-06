@@ -21,6 +21,45 @@ End-to-end validation of the v1 unlock-request state machine and its host-facing
 - **Evidence runner failure / throws** should force terminal denial (scaffold behavior).
 - **Restore/resume**: if snapshot is in `evidenceCompleted`, the coordinator should advance through `aiReviewed`.
 
+## Temporary unlock lease lifecycle edge cases (expiry + reshield)
+These validate the integrated behavior: reconciliation-driven expiry must trigger reshielding without accidentally re-unlocking/reshielding multiple times, even with renewals or clock-skew.
+
+1) **Expiry without re-unlock**
+   - Preconditions: an active lease has `expiresAt < reconcileNow`; no new grant happens before reconciliation.
+   - Expected:
+     - reconciliation returns `reshieldedTargetIDs` containing the targetID(s)
+     - exactly one `leaseExpired` event per newly-expired lease
+     - exactly one `leaseReshielded` event per reconciliation call (aggregated)
+     - temporarily-unlocked state becomes `false` at `reconcileNow`
+     - no grant/extend events emitted during reconciliation
+   - Unit test coverage:
+     - `UnlockLeaseManagerInstrumentationTests.testReconcileExpiry_expiresWithoutReunlock`
+
+2) **Renew/extend interactions around expiresAt boundary**
+   - Preconditions: existing lease is active until exactly `T = expiresAt` (exclusive boundary); an incoming grant/renew occurs at `now == T`.
+   - Expected:
+     - the incoming grant at `T` is treated as a *new* (inactive-at-boundary) lease (`leaseGranted` not `leaseExtended`)
+     - reconciliation at `T + ε` expires the old lease only (no resurrection/extension)
+   - Unit test coverage:
+     - `UnlockLeaseManagerInstrumentationTests.testGrant_renewsLease_whenExistingLeaseExpiresAtBoundary`
+
+3) **Rapid repeated unlock attempts**
+   - Preconditions: multiple grant requests for the same target inside the active window (including shorter-then-longer expiry requests).
+   - Expected:
+     - manager merges into a single stored lease with correct max expiry semantics
+     - after expiry, reconciliation emits `leaseExpired` once per newly-expired lease; `leaseReshielded` once per reconciliation call
+     - no “double-expire” / resurrection across consecutive reconciliation cycles
+   - Unit test coverage:
+     - `UnlockLeaseManagerInstrumentationTests.testGrant_rapidRepeats_preservesLeaseID_andMaxExpiry`
+
+4) **Clock skew / backwards reconciliation assumptions**
+   - Preconditions: first reconciliation runs `nowForward` (past expiry) then later a second reconciliation runs `nowBackwards` (earlier than the last reconcile).
+   - Expected:
+     - second `reconcileExpiry` is idempotent: `reshieldedTargetIDs` is empty
+     - no additional `leaseExpired` / `leaseReshielded` events emitted on the backwards call
+   - Unit test coverage:
+     - `UnlockLeaseManagerInstrumentationTests.testReconcileExpiry_clockSkew_backwards_doesNotReshieldAgain`
+
 ## Instrumentation (funnel metrics)
 ### Added API
 - `VowCore.RequestFunnelMetricsRecorder`
