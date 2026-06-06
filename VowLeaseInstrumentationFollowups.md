@@ -1,5 +1,38 @@
 # Vow lease-instrumentation follow-ups (missing events + schema alignment)
 
+## Usage story (turn this checklist into a PR)
+This checklist is the “operator runbook” for translating `VowSpecV2-QA-and-Rollout.md` instrumentation expectations into concrete code changes in the Vow SwiftPM repo.
+
+### Prerequisites
+- Swift toolchain + XCTest available (SwiftPM build/test works)
+- You’re operating in the correct repo: `~/.openclaw/repos/vow`
+
+### Runbook (commands / steps)
+1) Build to confirm the repo is in a compile-clean state:
+   ```bash
+   swift build
+   ```
+2) Run current unit tests:
+   ```bash
+   swift test
+   ```
+3) Implement the missing telemetry items in this document (event enum cases + new lease lifecycle event family + wiring in the relevant coordinator/lease-manager code paths).
+4) Add/extend unit tests to lock in the ordering + boundary/idempotency semantics (evidencePending, leaseGranted vs leaseExtended, leaseExpired/leaseReshielded on reconciliation).
+5) Re-run until green:
+   ```bash
+   swift test
+   ```
+
+### Expected outputs
+- Telemetry additions that match the QA matrix in `VowSpecV2-QA-and-Rollout.md`.
+- Unit tests under `Tests/VowCoreTests` covering the lease reconciliation expiry/reshield behaviors and the evidence/ordering expectations.
+- `swift test` passes.
+
+### Troubleshooting
+- Evidence failures: confirm `UnlockRequestEvent` includes `evidencePending` and the recorder is invoked when transitioning into `UnlockRequestStateMachine.evidencePending`.
+- Compile/type failures around lease telemetry: verify the new event family + recorder integration are added consistently across `Sources/VowCore/Logging/*`, `Sources/VowUI/UnlockRequestFlowCoordinator.swift`, and the reconciliation path in `Sources/VowCore/UnlockLeaseManager.swift`.
+- Ordering/idempotency failures: ensure reconciliation emits `leaseExpired` per newly-expired lease and `leaseReshielded` exactly once per reconciliation call, and that backwards/clock-skew reconciliation is idempotent.
+
 Context: This task is produced as a **follow-up list after the instrumentation integrity check**. Based on the current `main`-ish repo state in this workspace, the v2 QA doc references lease lifecycle events (`leaseGranted/leaseExtended/leaseExpired/leaseReshielded`), but the implementation currently only models **unlock-request funnel** events via `UnlockRequestEvent`.
 
 ## 1) Missing events (name → expected lifecycle moment)
