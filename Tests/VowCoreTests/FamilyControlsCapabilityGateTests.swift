@@ -80,4 +80,17 @@ final class FamilyControlsCapabilityGateTests: XCTestCase {
         XCTAssertEqual(Set(missing), Set(["com.example.A", "com.example.B"]))
         XCTAssertEqual(missing.count, 2)
     }
+
+    func test_computeMissingExtensions_isSortedDeterministically() {
+        let required = ["com.example.C", "com.example.A", "com.example.B"]
+        let present: Set<String> = []
+
+        let missing = FamilyControlsCapabilityGate.computeMissingExtensions(
+            requiredExtensionBundleIdentifiers: required,
+            presentExtensionBundleIdentifiers: present
+        )
+
+        XCTAssertEqual(missing, ["com.example.A", "com.example.B", "com.example.C"])
+    }
 }
+
