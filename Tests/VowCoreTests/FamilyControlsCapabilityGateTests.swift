@@ -22,6 +22,21 @@ final class FamilyControlsCapabilityGateTests: XCTestCase {
             FamilyControlsCapabilityGate.stateFromAuthorizationStatusDescription("not authorized"),
             .notAuthorized
         )
+        XCTAssertEqual(
+            FamilyControlsCapabilityGate.stateFromAuthorizationStatusDescription("AuthorizationStatus.notAuthorized"),
+            .notAuthorized
+        )
+    }
+
+    func test_stateFromAuthorizationStatusDescription_doesNotSubstringMatchAuthorized() {
+        // "unauthorized" contains the substring "authorized" but should not be treated as an explicit allow.
+        let state = FamilyControlsCapabilityGate.stateFromAuthorizationStatusDescription("unauthorized")
+        switch state {
+        case .unknown:
+            break
+        default:
+            XCTFail("Expected unknown")
+        }
     }
 
     func test_stateFromAuthorizationStatusDescription_unknownFallsBackToUnknown() {
