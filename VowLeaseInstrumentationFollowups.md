@@ -1,5 +1,38 @@
 # Vow lease-instrumentation follow-ups (missing events + schema alignment)
 
+## Operator narrative (what to do + what “done” looks like)
+In this follow-up, update Vow’s SwiftPM implementation so telemetry covers (1) the `UnlockRequestStateMachine.evidencePending` moment and (2) the full temporary-unlock lease lifecycle (`leaseGranted`, `leaseExtended`, `leaseExpired`, `leaseReshielded`) exactly as described in `VowSpecV2-QA-and-Rollout.md`.
+
+Prerequisites
+- Swift toolchain + XCTest available (SwiftPM build/test works)
+- You’re operating in the correct repo: `~/.openclaw/repos/vow`
+
+Operator steps / commands
+1) Confirm the repo is compile-clean:
+   ```bash
+   swift build
+   ```
+2) Run the current test suite:
+   ```bash
+   swift test
+   ```
+3) Implement the missing telemetry items (event enum cases + a lease lifecycle event family + wiring in the relevant coordinator/lease-manager code paths).
+4) Add/extend unit tests to lock in ordering + boundary/idempotency semantics (evidencePending, leaseGranted vs leaseExtended, leaseExpired/leaseReshielded on reconciliation).
+5) Re-run until green:
+   ```bash
+   swift test
+   ```
+
+Expected outputs
+- Telemetry additions that match the QA matrix in `VowSpecV2-QA-and-Rollout.md`.
+- Unit tests under `Tests/VowCoreTests` covering lease reconciliation expiry/reshield behaviors and evidence/ordering expectations.
+- `swift test` passes.
+
+Troubleshooting / edge notes
+- Evidence failures: ensure `UnlockRequestEvent` includes `evidencePending`, and the recorder is invoked when transitioning into `UnlockRequestStateMachine.evidencePending`.
+- Compile/type failures around lease telemetry: verify the new event family + recorder integration is added consistently across `Sources/VowCore/Logging/*`, `Sources/VowUI/UnlockRequestFlowCoordinator.swift`, and the reconciliation path in `Sources/VowCore/UnlockLeaseManager.swift`.
+- Ordering/idempotency failures: ensure reconciliation emits `leaseExpired` for each newly-expired lease and emits `leaseReshielded` exactly once per reconciliation call; reconciliation must be idempotent under backwards/clock-skew scenarios.
+
 ## Usage story (turn this checklist into a PR)
 This checklist is the “operator runbook” for translating `VowSpecV2-QA-and-Rollout.md` instrumentation expectations into concrete code changes in the Vow SwiftPM repo.
 
