@@ -164,3 +164,26 @@ Because `UnlockLease` already contains a privacy-safe core (`id`, `targetID`, `s
 - [ ] Event ordering and boundary semantics are validated with deterministic `now` injections.
 - [ ] Privacy minimization is maintained (no sensitive child data; UUIDs only; aggregate reshield where possible).
 
+## 5) Short verification checklist (for build-queue sweep)
+1) From `~/ .openclaw/repos/vow`:
+   - `swift build`
+2) Run the lease-manager instrumentation tests that lock in the boundary/idempotency semantics:
+   - `swift test --filter UnlockLeaseManagerInstrumentationTests`
+3) Confirm the four key behaviors are green:
+   - expiry emits reshield once, then stops
+   - grant at the expiry boundary renews while preserving correct lease state
+   - rapid repeated grants preserve lease ID and extend max expiry
+   - backwards/clock-skew reconciliation is idempotent (no extra reshields)
+
+## 6) Worked example workflow (boundary renewal + reconciliation)
+Goal: validate that a grant at the old lease’s expiry boundary results in the old lease being removed after reconciliation, with the new lease remaining active.
+
+Workflow (maps directly to `UnlockLeaseManagerInstrumentationTests.testGrant_renewsLease_whenExistingLeaseExpiresAtBoundary`):
+1) Run the single test:
+   ```bash
+   swift test --filter UnlockLeaseManagerInstrumentationTests/testGrant_renewsLease_whenExistingLeaseExpiresAtBoundary
+   ```
+2) Expected outcomes the test asserts:
+   - immediately after `grant(...)` the manager holds both the old+new lease drafts (old lease is still present during the boundary window)
+   - `reconcileExpiry(now:)` identifies the newly-expired target and returns it as “reshielded” exactly once
+   - after reconciliation, the manager keeps only the newly granted lease (old lease removed), and its `expiresAt` matches the granted lease draft
