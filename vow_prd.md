@@ -178,6 +178,98 @@ blocked_attempt
   -> review_logged
 ```
 
+### Evidence-gated Screen Time capability request-flow spec (fail-closed)
+
+This section converts the real-device capability checklist (Family Controls / Screen Time provisioning) into an explicit request-flow spec.
+
+#### 0) Capability/provisioning verification (fail-closed gate)
+
+Using the real-device matrix rules:
+- **authorized** + **required Screen Time extensions present** ⇒ capability **verified**
+- **notAuthorized** / **unknown** / **missing required extensions** ⇒ capability **not verified**
+
+**Interception + policy behavior**
+- If **not verified**:
+  - `ShieldConfigurationController.setPolicy(...)` must behave as a **no-op** (no blocking applied)
+  - the app must **not** offer/continue an unlock request that contradicts fail-closed behavior
+  - user-visible: “Screen Time / Family Controls not verified—complete setup to use unlock requests”
+  - logging: record capability verification result + reasons (authorization state, which extensions missing)
+  - unlock-request funnel events (`requestCreated`, etc.) should **not** be emitted because no unlock request should be initiated
+- If **verified**:
+  - blocking policy is applied for the requested target(s)
+  - user-visible unlock request flow starts
+
+#### 1) Evidence-handling state transitions (happy path)
+
+The unlock request lifecycle maps to `RequestState` / `UnlockRequestEvent`.
+
+**Evidence required (happy path)**
+1. `request_created`
+2. `friction_waiting`
+3. on friction completion: emit `evidenceRequired` → transition to `evidence_pending`
+4. `evidencePending` (evidence task runs)
+5. after evidence succeeds: emit `evidenceCompleted` → transition to `evidence_completed`
+6. immediately emit `aiReviewed` (no additional user decision)
+7. decision:
+   - `decisionApprovedTempUnlock` (emit `decisionApproved`, grant temporary lease)
+   - OR `decisionDeferred` (emit `decisionDeferred`)
+   - OR `decisionDenied` (emit `decisionDenied`)
+8. terminal follow-ups:
+   - for approved unlocks: `sessionObserved` → `sessionClosed` → `reviewLogged`
+   - for deferred/denied: `reviewLogged` / terminal QA follow-ups
+
+**Evidence not required (happy path)**
+- after friction completion, emit `evidenceRequired` with `evidenceRequired=false` → transition directly to `evidence_completed` (skip `evidence_pending`) → emit `aiReviewed` → decision
+
+#### 2) Evidence state → user-visible behavior → events/logging expectations
+
+A) `evidence_pending` (evidence required but not yet completed)
+- **User-visible**
+  - show required evidence task (“Complete the required evidence to continue”)
+  - explicitly do **not** grant any unlock/lease during this state
+- **Policy/interception**
+  - blocking remains in effect (policy stays applied for the target)
+- **Events/logging**
+  - `evidenceRequired` emitted when friction ends
+  - no `evidenceCompleted` / `aiReviewed` until evidence succeeds
+
+B) `evidence_completed` (evidence succeeded)
+- **User-visible**
+  - show AI review / decision preparation screen
+- **Policy/interception**
+  - still blocked until a decision grants a lease
+- **Events/logging**
+  - `evidenceCompleted` emitted
+  - immediately `aiReviewed` emitted
+
+C) Evidence missing / failure / bypass attempts (fail-closed)
+- **Evidence runner fails / throws / returns false (when evidence is required)**
+  - behavior: treat as terminal denial (never grant unlock)
+  - events: `evidenceCompleted` (scaffold completion) → `aiReviewed` → `decisionDenied`
+  - policy/interception: remain blocked; no lease granted
+- **Bypass attempt (user tries to approve before `aiReviewed`)**
+  - behavior: invalid transitions are ignored; unlock cannot be approved until `aiReviewed` exists
+  - events: no `decisionApproved` emitted before `aiReviewed`
+  - policy/interception: remain blocked
+- **Evidence required but not actually provided by the host**
+  - production requirement: do **not** auto-complete; deny instead
+  - events/logging expected in QA: `evidenceRequired` → terminal denial path with `decisionDenied`
+
+#### 3) Decision stage behavior (post `aiReviewed`)
+- `decisionApprovedTempUnlock`
+  - emit `decisionApproved`
+  - grant temporary unlock lease; unblocking applies only within lease window
+- `decisionDeferred`
+  - emit `decisionDeferred`
+  - keep target blocked; allow user to retry/come back per product policy
+- `decisionDenied`
+  - emit `decisionDenied`
+  - keep target blocked; show denial explanation
+
+When any decision reaches a terminal outcome, follow-through events should be recorded:
+- approved leases: `sessionObserved` → `sessionClosed` → `reviewLogged`
+- deferred/denied: `reviewLogged` as applicable
+
 ## 6.4 Friction Engine
 
 ### Functional requirements
