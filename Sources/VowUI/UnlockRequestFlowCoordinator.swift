@@ -23,6 +23,7 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
     private let frictionInputs: FrictionInputs
     private let approvedDurationSeconds: TimeInterval
     private let funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)?
+    private let leaseLifecycleRecorder: (any LeaseLifecycleMetricsRecorder)?
 
     private var frictionTimerTask: Task<Void, Never>?
     private var evidenceWork: Task<Void, Never>?
@@ -51,15 +52,35 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         frictionInputs: FrictionInputs? = nil,
         evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
         onDecision: ((UnlockDecision) -> Void)? = nil,
-        nfcEnforcer: NfcRuntimeEnforcer? = nil
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        onNfcViolation: ((NfcViolation) -> Void)? = nil,
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil,
+        leaseLifecycleRecorder: (any LeaseLifecycleMetricsRecorder)? = nil
     ) {
         self.stateMachine = UnlockRequestStateMachine(evidenceRequired: evidenceRequired)
         self.requestID = requestID
         self.target = target
         self.leaseManager = leaseManager
         self.chaosEvidencePlan = nil
+
         self.onDecision = onDecision
+        self.evidenceRunner = evidenceRunner
         self.nfcEnforcer = nfcEnforcer
+        self.onNfcViolation = onNfcViolation
+
+        self.frictionEngine = frictionEngine
+        let computedTier: FrictionTier = {
+            switch target.riskLevel {
+            case .low: return .low
+            case .medium: return .medium
+            case .high: return .high
+            }
+        }()
+        self.frictionInputs = frictionInputs ?? FrictionInputs(tier: computedTier)
+        self.approvedDurationSeconds = approvedDurationSeconds
+
+        self.funnelMetricsRecorder = funnelMetricsRecorder
+        self.leaseLifecycleRecorder = leaseLifecycleRecorder
     }
 
     /// Convenience initializer that wires ChaosHQ mirror-intake into a VowCore
@@ -72,7 +93,12 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         requestID: UUID = UUID(),
         target: BlockedTarget,
         onDecision: ((UnlockDecision) -> Void)? = nil,
-        nfcEnforcer: NfcRuntimeEnforcer? = nil
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        onNfcViolation: ((NfcViolation) -> Void)? = nil,
+        evidenceRunner: (@Sendable () async throws -> Bool)? = nil,
+        frictionEngine: FrictionEngine = FrictionEngine(),
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil,
+        leaseLifecycleRecorder: (any LeaseLifecycleMetricsRecorder)? = nil
     ) {
         let plan: ChaosHqEvidencePlan? = chaosMirrorIntakePayload.flatMap { payload in
             do {
@@ -93,9 +119,12 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.target = target
         self.leaseManager = UnlockLeaseManager()
         self.chaosEvidencePlan = plan
+
         self.onDecision = onDecision
-        self.nfcEnforcer = nfcEnforcer
         self.evidenceRunner = evidenceRunner
+        self.nfcEnforcer = nfcEnforcer
+        self.onNfcViolation = onNfcViolation
+
         self.frictionEngine = frictionEngine
 
         let computedTier: FrictionTier = {
@@ -108,10 +137,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         self.frictionInputs = FrictionInputs(tier: computedTier)
         self.approvedDurationSeconds = 300
 
-        self.nfcEnforcer = nfcEnforcer
-        self.onNfcViolation = onNfcViolation
-
         self.funnelMetricsRecorder = funnelMetricsRecorder
+        self.leaseLifecycleRecorder = leaseLifecycleRecorder
     }
 
     public func snapshot() -> UnlockRequestFlowSnapshot {
@@ -276,15 +303,16 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
 
     private func completeFrictionAsync() async {
         guard stateMachine.state == .frictionWaiting else { return }
-        _ = applyAndRecord(.evidenceRequired)
 
-        if stateMachine.state == .evidenceCompleted {
-            // No evidence required; finish the AI review step.
+        if stateMachine.evidenceRequired {
+            // evidenceRequired transitions into `evidencePending`.
+            _ = applyAndRecord(.evidenceRequired)
+            startEvidenceIfNeeded()
+        } else {
+            // No evidence required: transition directly into `evidenceCompleted`.
+            _ = applyAndRecord(.evidenceCompleted)
             _ = applyAndRecord(.aiReviewed)
-            return
         }
-
-        startEvidenceIfNeeded()
     }
 
     /// Backwards-compatible API for UI/tests.
@@ -313,59 +341,21 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         // NFC failure should fail-safe deny unlock.
         guard stateMachine.state == .aiReviewed else { return }
 
+        let now = Date()
+
         if let nfcEnforcer {
             let result = await nfcEnforcer.verify(requestID: requestID)
             switch result {
             case .verified:
-                break
+                guard applyAndRecord(.decisionApproved) else { return }
+                grantLease(now: now)
+                onDecision?(.approved_temp_unlock)
 
-            case .notVerified:
-                let prior = stateMachine.state
-                stateMachine.apply(.decisionDenied)
-                guard stateMachine.state != prior else { return }
-                onDecision?(.denied)
-                return
-            }
-        }
-
-        let prior = stateMachine.state
-        stateMachine.apply(.decisionApproved)
-        guard stateMachine.state != prior else { return }
-
-    private func decisionApprovedAsync() async {
-        let now = Date()
-
-        if let nfcEnforcer {
-            do {
-                let outcome = try await nfcEnforcer.verify(targetID: target.id, requestID: requestID, at: now)
-
-                switch outcome {
-                case .verified:
-                    guard applyAndRecord(.decisionApproved) else { return }
-                    grantLease(now: now)
-                    onDecision?(.approved_temp_unlock)
-
-                case .notVerified(let violation):
-                    _ = applyAndRecord(.decisionDenied)
-                    onNfcViolation?(violation)
-                    onDecision?(.denied)
-                }
-            } catch {
-                // Fail safe: deny unlock.
-                let graceEndsAt = now.addingTimeInterval(nfcEnforcer.gracePeriodSeconds)
-                let violation = NfcViolation(
-                    targetID: target.id,
-                    requestID: requestID,
-                    detectedAt: now,
-                    graceEndsAt: graceEndsAt,
-                    alarmAt: graceEndsAt
-                )
-
+            case .notVerified(let violation):
                 _ = applyAndRecord(.decisionDenied)
                 onNfcViolation?(violation)
                 onDecision?(.denied)
             }
-
             return
         }
 
@@ -382,7 +372,23 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
             reason: "Temp unlock for request",
             requestID: requestID
         )
-        _ = leaseManager.grant(lease, now: now)
+
+        let (_, events) = leaseManager.grantWithLifecycleEvents(lease, now: now)
+        leaseLifecycleRecorder.map { recorder in
+            events.forEach { recorder.record($0) }
+        }
+    }
+
+    /// Reconciles lease expiry and emits `leaseExpired` + aggregated `leaseReshielded` events.
+    ///
+    /// Returns reshield target IDs so hosts can apply shield updates.
+    @discardableResult
+    public func reconcileLeaseExpiry(now: Date = Date()) -> [UUID] {
+        let result = leaseManager.reconcileExpiryWithLifecycleEvents(now: now)
+        leaseLifecycleRecorder.map { recorder in
+            result.events.forEach { recorder.record($0) }
+        }
+        return result.reshieldedTargetIDs
     }
 
     public func decisionDeferred() {
