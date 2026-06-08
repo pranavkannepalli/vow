@@ -109,16 +109,24 @@ extension FamilyControlsCapabilityGate {
 
     /// Maps a runtime authorization status description into our safe gate states.
     ///
-    /// Keep this mapping conservative: if we cannot match, return `.unknown`.
+    /// Keep this mapping conservative:
+    /// - Only treat *explicit* "approved/authorized" values as `.authorized`.
+    /// - Everything else (including unknown/unexpected strings) becomes `.unknown`.
     public static func stateFromAuthorizationStatusDescription(_ description: String) -> State {
         let lower = description.lowercased()
 
-        if lower.contains("approved") || lower == "authorizationstatus.authorized" || lower.contains("authorized") {
-            return .authorized
+        // Deny first, with explicit not-authorized variants.
+        if lower == "authorizationstatus.notauthorized"
+            || lower == "not authorized"
+            || lower == "notauthorized"
+            || lower == "denied"
+            || lower.contains("not authorized") {
+            return .notAuthorized
         }
 
-        if lower.contains("denied") || lower.contains("notauthorized") || lower.contains("not authorized") {
-            return .notAuthorized
+        // Only accept explicit authorized variants; avoid substring matches like "not authorized".
+        if lower == "authorizationstatus.authorized" || lower == "approved" || lower == "authorized" {
+            return .authorized
         }
 
         return .unknown(message: description)
@@ -128,7 +136,12 @@ extension FamilyControlsCapabilityGate {
         requiredExtensionBundleIdentifiers: [String],
         presentExtensionBundleIdentifiers: Set<String>
     ) -> [String] {
-        requiredExtensionBundleIdentifiers.filter { !presentExtensionBundleIdentifiers.contains($0) }
+        // Treat “required” as a set: duplicates in the host-provided list should not
+        // cause duplicate “missing” entries.
+        let required = Set(requiredExtensionBundleIdentifiers)
+        return required
+            .filter { !presentExtensionBundleIdentifiers.contains($0) }
+            .sorted()
     }
 
     /// Best-effort enumeration of extension bundle identifiers from the host app's built-in plug-ins.
