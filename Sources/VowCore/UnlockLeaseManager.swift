@@ -152,9 +152,31 @@ public struct UnlockLeaseManager: Codable, Hashable {
         let stillActiveIDs = Set(stillActive.map { $0.id })
 
         let newlyExpiredIDs = activeLeaseIDs.subtracting(stillActiveIDs)
-        let expiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
-        let reshieldTargetIDsSet = Set(expiredLeases.map { $0.targetID })
-        let reshieldTargetIDs = Array(reshieldTargetIDsSet).sorted { $0.uuidString < $1.uuidString }
+        let newlyExpiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
+        let reshieldTargetIDs = Set(newlyExpiredLeases.map { $0.targetID })
+
+        if !newlyExpiredLeases.isEmpty {
+            // Emit one event per expired lease.
+            for lease in newlyExpiredLeases {
+                record?(UnlockLeaseLifecycleEvent(
+                    type: .leaseExpired,
+                    occurredAt: now,
+                    requestID: lease.requestID,
+                    leaseID: lease.id,
+                    targetID: lease.targetID,
+                    startAt: lease.startAt,
+                    expiresAt: lease.expiresAt,
+                    reason: lease.reason
+                ))
+            }
+
+            record?(UnlockLeaseLifecycleEvent(
+                type: .leaseReshielded,
+                occurredAt: now,
+                reshieldedTargetIDs: Array(reshieldTargetIDs),
+                expiredLeaseIDs: newlyExpiredLeases.map { $0.id }
+            ))
+        }
 
         // Apply state updates.
         leases = stillActive

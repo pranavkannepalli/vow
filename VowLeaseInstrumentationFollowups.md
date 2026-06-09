@@ -25,7 +25,7 @@ Operator steps / commands
 
 Expected outputs
 - Telemetry additions that match the QA matrix in `VowSpecV2-QA-and-Rollout.md`.
-- Unit tests under `Tests/VowCoreTests` covering lease reconciliation expiry/reshield behaviors (e.g., `UnlockLeaseManagerInstrumentationTests.testReconcileExpiry_expiresWithoutReunlock`) and evidence/ordering expectations.
+- Unit tests under `Tests/VowCoreTests` covering lease reconciliation expiry/reshield behaviors (e.g., `UnlockLeaseManagerInstrumentationTests.testReconcileExpiry_expiresWithoutReunlock`) and ordering/idempotency expectations.
 - `swift test` passes.
 
 Troubleshooting / edge notes
@@ -58,7 +58,7 @@ This checklist is the “operator runbook” for translating `VowSpecV2-QA-and-R
 
 ### Expected outputs
 - Telemetry additions that match the QA matrix in `VowSpecV2-QA-and-Rollout.md`.
-- Unit tests under `Tests/VowCoreTests` covering the lease reconciliation expiry/reshield behaviors and the evidence/ordering expectations.
+- Unit tests under `Tests/VowCoreTests` covering the lease reconciliation expiry/reshield behaviors and ordering/idempotency expectations.
 - `swift test` passes.
 
 ### Troubleshooting
