@@ -10,29 +10,46 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
     /// The set of lease IDs that were considered active the last time the caller
     /// reconciled expiry. Used to detect which leases newly expired.
-    ///
-    /// Note: this is derived from `leases` and is not persisted across Codable
-    /// encoding. After decoding, we conservatively recompute using `Date()`.
     private var activeLeaseIDs: Set<UUID>
+
+    /// Timestamp of the last reconciliation call.
+    ///
+    /// Used to make reconciliation idempotent under backwards/clock-skew by
+    /// suppressing "newly expired" detection when `now` decreases.
+    private var lastReconcileAt: Date?
 
     private enum CodingKeys: String, CodingKey {
         case leases
+        case lastReconcileAt
     }
 
     public init(leases: [UnlockLease] = [], now: Date = Date()) {
         self.leases = leases
         self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: now) }.map { $0.id })
+        self.lastReconcileAt = now
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.leases = try container.decode([UnlockLease].self, forKey: .leases)
-        self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: Date()) }.map { $0.id })
+        self.lastReconcileAt = try container.decodeIfPresent(Date.self, forKey: .lastReconcileAt)
+
+        let referenceDate = lastReconcileAt ?? Date()
+        self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: referenceDate) }.map { $0.id })
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(leases, forKey: .leases)
+        try container.encode(lastReconcileAt, forKey: .lastReconcileAt)
+    }
+
+    public static func == (lhs: UnlockLeaseManager, rhs: UnlockLeaseManager) -> Bool {
+        lhs.leases == rhs.leases
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(leases)
     }
 
     /// Returns true if there is an active lease for `targetID` at `now`.
@@ -109,14 +126,12 @@ public struct UnlockLeaseManager: Codable, Hashable {
     /// - Removes expired leases from `leases`.
     /// - Returns the targetIDs whose leases newly expired since the last
     ///   reconciliation, so callers can reshield those targets.
-    ///
-    /// If `record` is provided, emits privacy-safe instrumentation events for:
-    /// - `leaseExpired` (per expired lease)
-    /// - `leaseReshielded` (aggregated per reconciliation call)
-    public mutating func reconcileExpiry(
-        now: Date = Date(),
-        record: ((UnlockLeaseLifecycleEvent) -> Void)? = nil
-    ) -> [UUID] {
+    public mutating func reconcileExpiry(now: Date = Date()) -> [UUID] {
+        // Backwards time (clock skew): keep state stable and emit nothing.
+        if let last = lastReconcileAt, now < last {
+            return []
+        }
+
         let stillActive = leases.filter { $0.isActive(at: now) }
         let stillActiveIDs = Set(stillActive.map { $0.id })
 
@@ -149,6 +164,7 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
         leases = stillActive
         activeLeaseIDs = stillActiveIDs
+        lastReconcileAt = now
 
         return Array(reshieldTargetIDs)
     }
