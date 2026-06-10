@@ -8,6 +8,11 @@ import Foundation
 public struct UnlockLeaseManager: Codable, Hashable {
     public var leases: [UnlockLease]
 
+    /// Optional hook for privacy-minimized lease lifecycle telemetry.
+    ///
+    /// Not encoded/decoded (telemetry is runtime-only).
+    private var leaseLifecycleRecorder: (@Sendable (UnlockLeaseLifecycleEvent) -> Void)?
+
     /// The set of lease IDs that were considered active the last time the caller
     /// reconciled expiry. Used to detect which leases newly expired.
     private var activeLeaseIDs: Set<UUID>
@@ -23,8 +28,13 @@ public struct UnlockLeaseManager: Codable, Hashable {
         case lastReconcileAt
     }
 
-    public init(leases: [UnlockLease] = [], now: Date = Date()) {
+    public init(
+        leases: [UnlockLease] = [],
+        now: Date = Date(),
+        leaseLifecycleRecorder: (@Sendable (UnlockLeaseLifecycleEvent) -> Void)? = nil
+    ) {
         self.leases = leases
+        self.leaseLifecycleRecorder = leaseLifecycleRecorder
         self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: now) }.map { $0.id })
         self.lastReconcileAt = now
     }
@@ -36,6 +46,8 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
         let referenceDate = lastReconcileAt ?? Date()
         self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: referenceDate) }.map { $0.id })
+
+        self.leaseLifecycleRecorder = nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -67,6 +79,7 @@ public struct UnlockLeaseManager: Codable, Hashable {
         if mergeActive, let idx = leases.firstIndex(where: { $0.targetID == lease.targetID && $0.isActive(at: now) }) {
             let existing = leases[idx]
             let extendedExpiresAt = max(existing.expiresAt, lease.expiresAt)
+
             let merged = UnlockLease(
                 id: existing.id,
                 targetID: existing.targetID,
@@ -75,12 +88,49 @@ public struct UnlockLeaseManager: Codable, Hashable {
                 reason: lease.reason,
                 requestID: lease.requestID
             )
+
             leases[idx] = merged
+
+            leaseLifecycleRecorder?(
+                .leaseExtended(
+                    .init(
+                        leaseID: merged.id,
+                        targetID: merged.targetID,
+                        requestID: merged.requestID,
+                        previousExpiresAt: existing.expiresAt,
+                        newExpiresAt: merged.expiresAt,
+                        at: now
+                    )
+                )
+            )
+
+            if merged.isActive(at: now) {
+                activeLeaseIDs.insert(merged.id)
+            }
+
             return merged
-        } else {
-            leases.append(lease)
-            return lease
         }
+
+        leases.append(lease)
+
+        leaseLifecycleRecorder?(
+            .leaseGranted(
+                .init(
+                    leaseID: lease.id,
+                    targetID: lease.targetID,
+                    requestID: lease.requestID,
+                    startAt: lease.startAt,
+                    expiresAt: lease.expiresAt,
+                    at: now
+                )
+            )
+        )
+
+        if lease.isActive(at: now) {
+            activeLeaseIDs.insert(lease.id)
+        }
+
+        return lease
     }
 
     /// Reconciles which leases are expired as of `now`.
@@ -98,12 +148,48 @@ public struct UnlockLeaseManager: Codable, Hashable {
         let stillActiveIDs = Set(stillActive.map { $0.id })
 
         let newlyExpiredIDs = activeLeaseIDs.subtracting(stillActiveIDs)
-        let reshieldTargetIDs = Set(leases.filter { newlyExpiredIDs.contains($0.id) }.map { $0.targetID })
+        let newlyExpiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
+
+        let reshieldTargetIDsSet = Set(newlyExpiredLeases.map { $0.targetID })
+        let reshieldTargetIDs = reshieldTargetIDsSet
+            .sorted { $0.uuidString < $1.uuidString }
 
         leases = stillActive
         activeLeaseIDs = stillActiveIDs
         lastReconcileAt = now
 
-        return Array(reshieldTargetIDs)
+        if let recorder = leaseLifecycleRecorder, !newlyExpiredLeases.isEmpty {
+            let expiredLeasesOrdered = newlyExpiredLeases
+                .sorted {
+                    $0.expiresAt < $1.expiresAt ||
+                    ($0.expiresAt == $1.expiresAt && $0.id.uuidString < $1.id.uuidString)
+                }
+
+            for expired in expiredLeasesOrdered {
+                recorder(
+                    .leaseExpired(
+                        .init(
+                            leaseID: expired.id,
+                            targetID: expired.targetID,
+                            requestID: expired.requestID,
+                            startAt: expired.startAt,
+                            expiresAt: expired.expiresAt,
+                            at: now
+                        )
+                    )
+                )
+            }
+
+            recorder(
+                .leaseReshielded(
+                    .init(
+                        reshieldTargetIDs: reshieldTargetIDs,
+                        at: now
+                    )
+                )
+            )
+        }
+
+        return reshieldTargetIDs
     }
 }
