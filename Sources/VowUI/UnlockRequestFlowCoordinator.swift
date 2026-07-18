@@ -304,6 +304,8 @@ public final class UnlockRequestFlowCoordinator: ObservableObject {
         if stateMachine.evidenceRequired {
             // evidenceRequired transitions into `evidencePending`.
             _ = applyAndRecord(.evidenceRequired)
+            // Telemetry marker for entry into evidencePending state.
+            record(.evidencePending)
             startEvidenceIfNeeded()
         } else {
             // No evidence required: transition directly into `evidenceCompleted`.

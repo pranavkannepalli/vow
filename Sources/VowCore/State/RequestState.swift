@@ -10,6 +10,7 @@ public enum UnlockRequestEvent: Codable {
     case requestCreated
     case frictionTimerStarted
     case evidenceRequired
+    case evidencePending
     case evidenceCompleted
     case aiReviewed
 
@@ -87,6 +88,9 @@ public struct UnlockRequestStateMachine: Codable {
 
         case (.frictionWaiting, .evidenceRequired, false):
             state = .evidenceCompleted
+
+        case (.evidencePending, .evidencePending, _):
+            break
 
         case (.evidencePending, .evidenceCompleted, _):
             state = .evidenceCompleted

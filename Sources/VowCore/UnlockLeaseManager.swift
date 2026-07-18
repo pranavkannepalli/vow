@@ -139,6 +139,10 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
     /// Reconciles which leases are expired as of `now` and returns lifecycle telemetry.
     ///
+    /// Lifecycle event ordering: one `leaseExpired` per newly-expired lease (in
+    /// order of original lease index), followed by exactly one aggregated
+    /// `leaseReshielded` per reconciliation call.
+    ///
     /// Backwards time (clock skew): reconciliation is idempotent; emit no events.
     public mutating func reconcileExpiryWithLifecycleEvents(
         now: Date = Date()
@@ -153,42 +157,20 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
         let newlyExpiredIDs = activeLeaseIDs.subtracting(stillActiveIDs)
         let newlyExpiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
-        let reshieldTargetIDs = Set(newlyExpiredLeases.map { $0.targetID })
+        let reshieldTargetIDs = Array(Set(newlyExpiredLeases.map { $0.targetID }))
 
-        if !newlyExpiredLeases.isEmpty {
-            // Emit one event per expired lease.
-            for lease in newlyExpiredLeases {
-                record?(UnlockLeaseLifecycleEvent(
-                    type: .leaseExpired,
-                    occurredAt: now,
-                    requestID: lease.requestID,
-                    leaseID: lease.id,
-                    targetID: lease.targetID,
-                    startAt: lease.startAt,
-                    expiresAt: lease.expiresAt,
-                    reason: lease.reason
-                ))
-            }
-
-            record?(UnlockLeaseLifecycleEvent(
-                type: .leaseReshielded,
-                occurredAt: now,
-                reshieldedTargetIDs: Array(reshieldTargetIDs),
-                expiredLeaseIDs: newlyExpiredLeases.map { $0.id }
-            ))
-        }
-
-        // Apply state updates.
+        // Apply state updates before building events so return values are
+        // consistent with the new state.
         leases = stillActive
         activeLeaseIDs = stillActiveIDs
         lastReconcileAt = now
 
-        guard !expiredLeases.isEmpty else {
+        guard !newlyExpiredLeases.isEmpty else {
             return ([], [])
         }
 
         var events: [UnlockLeaseLifecycleEvent] = []
-        for lease in expiredLeases {
+        for lease in newlyExpiredLeases {
             events.append(
                 .leaseExpired(
                     .init(
