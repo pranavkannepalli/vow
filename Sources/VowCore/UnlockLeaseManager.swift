@@ -8,6 +8,11 @@ import Foundation
 public struct UnlockLeaseManager: Codable, Hashable {
     public var leases: [UnlockLease]
 
+    /// Optional hook for privacy-minimized lease lifecycle telemetry.
+    ///
+    /// Not encoded/decoded (telemetry is runtime-only).
+    private var leaseLifecycleRecorder: (@Sendable (UnlockLeaseLifecycleEvent) -> Void)?
+
     /// The set of lease IDs that were considered active the last time the caller
     /// reconciled expiry. Used to detect which leases newly expired.
     private var activeLeaseIDs: Set<UUID>
@@ -23,8 +28,13 @@ public struct UnlockLeaseManager: Codable, Hashable {
         case lastReconcileAt
     }
 
-    public init(leases: [UnlockLease] = [], now: Date = Date()) {
+    public init(
+        leases: [UnlockLease] = [],
+        now: Date = Date(),
+        leaseLifecycleRecorder: (@Sendable (UnlockLeaseLifecycleEvent) -> Void)? = nil
+    ) {
         self.leases = leases
+        self.leaseLifecycleRecorder = leaseLifecycleRecorder
         self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: now) }.map { $0.id })
         self.lastReconcileAt = now
     }
@@ -36,6 +46,8 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
         let referenceDate = lastReconcileAt ?? Date()
         self.activeLeaseIDs = Set(leases.filter { $0.isActive(at: referenceDate) }.map { $0.id })
+
+        self.leaseLifecycleRecorder = nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -90,6 +102,7 @@ public struct UnlockLeaseManager: Codable, Hashable {
                 reason: lease.reason,
                 requestID: lease.requestID
             )
+
             leases[idx] = merged
 
             return (
