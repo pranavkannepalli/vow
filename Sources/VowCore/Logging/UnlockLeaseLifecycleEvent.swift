@@ -1,15 +1,15 @@
 import Foundation
 
-/// Privacy-minimized telemetry for temporary unlock lease lifecycle.
+/// Telemetry-safe events for the temporary-unlock lease lifecycle.
 ///
-/// IMPORTANT: Payloads intentionally include only non-sensitive UUID/time fields.
-public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
+/// Data minimization: payload uses only UUID identifiers + coarse timestamps.
+public enum UnlockLeaseLifecycleEvent: Codable, Hashable, Sendable {
     case leaseGranted(LeaseGrantedPayload)
     case leaseExtended(LeaseExtendedPayload)
     case leaseExpired(LeaseExpiredPayload)
     case leaseReshielded(LeaseReshieldedPayload)
 
-    public struct LeaseGrantedPayload: Codable, Equatable {
+    public struct LeaseGrantedPayload: Codable, Hashable, Sendable {
         public let leaseID: UUID
         public let targetID: UUID
         public let requestID: UUID
@@ -17,14 +17,7 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
         public let expiresAt: Date
         public let at: Date
 
-        public init(
-            leaseID: UUID,
-            targetID: UUID,
-            requestID: UUID,
-            startAt: Date,
-            expiresAt: Date,
-            at: Date
-        ) {
+        public init(leaseID: UUID, targetID: UUID, requestID: UUID, startAt: Date, expiresAt: Date, at: Date) {
             self.leaseID = leaseID
             self.targetID = targetID
             self.requestID = requestID
@@ -34,7 +27,7 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
         }
     }
 
-    public struct LeaseExtendedPayload: Codable, Equatable {
+    public struct LeaseExtendedPayload: Codable, Hashable, Sendable {
         public let leaseID: UUID
         public let targetID: UUID
         public let requestID: UUID
@@ -59,7 +52,7 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
         }
     }
 
-    public struct LeaseExpiredPayload: Codable, Equatable {
+    public struct LeaseExpiredPayload: Codable, Hashable, Sendable {
         public let leaseID: UUID
         public let targetID: UUID
         public let requestID: UUID
@@ -67,14 +60,7 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
         public let expiresAt: Date
         public let at: Date
 
-        public init(
-            leaseID: UUID,
-            targetID: UUID,
-            requestID: UUID,
-            startAt: Date,
-            expiresAt: Date,
-            at: Date
-        ) {
+        public init(leaseID: UUID, targetID: UUID, requestID: UUID, startAt: Date, expiresAt: Date, at: Date) {
             self.leaseID = leaseID
             self.targetID = targetID
             self.requestID = requestID
@@ -84,7 +70,7 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
         }
     }
 
-    public struct LeaseReshieldedPayload: Codable, Equatable {
+    public struct LeaseReshieldedPayload: Codable, Hashable, Sendable {
         public let reshieldTargetIDs: [UUID]
         public let at: Date
 
@@ -93,4 +79,14 @@ public enum UnlockLeaseLifecycleEvent: Codable, Equatable {
             self.at = at
         }
     }
+}
+
+/// Host-facing sink for lease lifecycle telemetry.
+public protocol LeaseLifecycleMetricsRecorder: Sendable {
+    func record(_ event: UnlockLeaseLifecycleEvent)
+}
+
+public struct NoopLeaseLifecycleMetricsRecorder: LeaseLifecycleMetricsRecorder {
+    public init() {}
+    public func record(_ event: UnlockLeaseLifecycleEvent) {}
 }

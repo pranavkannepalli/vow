@@ -352,22 +352,84 @@ final class UnlockLeaseManagerInstrumentationTests: XCTestCase {
             startAt: t0.addingTimeInterval(5),
             expiresAt: t0.addingTimeInterval(15),
             reason: "skew",
-            requestID: requestID
+            requestID: UUID()
         )
 
-        var recorded: [UnlockLeaseLifecycleEvent] = []
-        var mgr = UnlockLeaseManager(
-            leases: [lease],
-            now: t0.addingTimeInterval(10),
-            leaseLifecycleRecorder: { recorded.append($0) }
+        var mgr = UnlockLeaseManager(leases: [lease], now: t0.addingTimeInterval(10))
+        let forward = mgr.reconcileExpiryWithLifecycleEvents(now: t0.addingTimeInterval(10))
+        XCTAssertEqual(forward.events.count, 0)
+
+        let backwards = mgr.reconcileExpiryWithLifecycleEvents(now: t0.addingTimeInterval(4))
+        XCTAssertEqual(backwards.events.count, 0)
+    }
+
+    func testReconcileExpiryWithLifecycleEvents_grantAtBoundary_isLeaseGranted_notExtended() {
+        let targetID = UUID()
+        let t0 = Date(timeIntervalSince1970: 500)
+        let T = t0.addingTimeInterval(10)
+
+        let oldLease = UnlockLease(
+            targetID: targetID,
+            startAt: t0,
+            expiresAt: T,
+            reason: "old",
+            requestID: UUID()
         )
 
-        // Reconcile at the same nowForward should be idempotent.
-        _ = mgr.reconcileExpiry(now: t0.addingTimeInterval(10))
-        XCTAssertTrue(recorded.isEmpty)
+        var mgr = UnlockLeaseManager(leases: [oldLease], now: t0)
+        XCTAssertTrue(mgr.isTemporarilyUnlocked(targetID: targetID, at: T.addingTimeInterval(-1)))
 
-        // Backwards reconciliation must emit nothing.
-        _ = mgr.reconcileExpiry(now: t0.addingTimeInterval(4))
-        XCTAssertTrue(recorded.isEmpty)
+        let newDraft = UnlockLease(
+            targetID: targetID,
+            startAt: T,
+            expiresAt: T.addingTimeInterval(20),
+            reason: "new",
+            requestID: UUID()
+        )
+
+        let grantResult = mgr.grantWithLifecycleEvents(newDraft, now: T)
+        XCTAssertEqual(grantResult.events.count, 1)
+        guard case let .leaseGranted(payload) = grantResult.events[0] else {
+            return XCTFail("Expected leaseGranted at boundary")
+        }
+        XCTAssertEqual(payload.leaseID, grantResult.granted.id)
+        XCTAssertNotEqual(grantResult.granted.id, oldLease.id)
+
+        let reconcile = mgr.reconcileExpiryWithLifecycleEvents(now: T.addingTimeInterval(0.001))
+        XCTAssertEqual(reconcile.events.filter({ if case .leaseExpired = $0 { return true } else { return false } }).count, 1)
+    }
+
+    func testReconcileExpiryWithLifecycleEvents_reshieldedEventIsAggregatedPerCall() {
+        let t0 = Date(timeIntervalSince1970: 600)
+        let target1 = UUID()
+        let target2 = UUID()
+
+        let lease1 = UnlockLease(
+            targetID: target1,
+            startAt: t0,
+            expiresAt: t0.addingTimeInterval(10),
+            reason: "l1",
+            requestID: UUID()
+        )
+        let lease2 = UnlockLease(
+            targetID: target2,
+            startAt: t0,
+            expiresAt: t0.addingTimeInterval(10),
+            reason: "l2",
+            requestID: UUID()
+        )
+
+        var mgr = UnlockLeaseManager(leases: [lease1, lease2], now: t0)
+        let result = mgr.reconcileExpiryWithLifecycleEvents(now: t0.addingTimeInterval(11))
+
+        XCTAssertEqual(result.reshieldedTargetIDs.count, 2)
+
+        let reshieldEvents = result.events.filter { if case .leaseReshielded = $0 { return true } else { return false } }
+        XCTAssertEqual(reshieldEvents.count, 1)
+
+        guard case let .leaseReshielded(payload) = reshieldEvents[0] else {
+            return XCTFail("Expected leaseReshielded payload")
+        }
+        XCTAssertEqual(Set(payload.reshieldTargetIDs), Set([target1, target2]))
     }
 }

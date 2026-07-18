@@ -76,8 +76,22 @@ public struct UnlockLeaseManager: Codable, Hashable {
     /// latest expiry. The lease `id` and original `startAt` are preserved.
     @discardableResult
     public mutating func grant(_ lease: UnlockLease, mergeActive: Bool = true, now: Date = Date()) -> UnlockLease {
+        let (granted, _) = grantWithLifecycleEvents(lease, mergeActive: mergeActive, now: now)
+        return granted
+    }
+
+    /// Grants a new lease and returns privacy-minimized lifecycle telemetry events.
+    ///
+    /// - When merging into an existing active lease: emits `leaseExtended`.
+    /// - When appending as inactive-at-boundary/new: emits `leaseGranted`.
+    public mutating func grantWithLifecycleEvents(
+        _ lease: UnlockLease,
+        mergeActive: Bool = true,
+        now: Date = Date()
+    ) -> (granted: UnlockLease, events: [UnlockLeaseLifecycleEvent]) {
         if mergeActive, let idx = leases.firstIndex(where: { $0.targetID == lease.targetID && $0.isActive(at: now) }) {
             let existing = leases[idx]
+            let previousExpiresAt = existing.expiresAt
             let extendedExpiresAt = max(existing.expiresAt, lease.expiresAt)
 
             let merged = UnlockLease(
@@ -91,46 +105,39 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
             leases[idx] = merged
 
-            leaseLifecycleRecorder?(
-                .leaseExtended(
-                    .init(
-                        leaseID: merged.id,
-                        targetID: merged.targetID,
-                        requestID: merged.requestID,
-                        previousExpiresAt: existing.expiresAt,
-                        newExpiresAt: merged.expiresAt,
-                        at: now
+            return (
+                merged,
+                [
+                    .leaseExtended(
+                        .init(
+                            leaseID: merged.id,
+                            targetID: merged.targetID,
+                            requestID: merged.requestID,
+                            previousExpiresAt: previousExpiresAt,
+                            newExpiresAt: extendedExpiresAt,
+                            at: now
+                        )
                     )
-                )
+                ]
             )
-
-            if merged.isActive(at: now) {
-                activeLeaseIDs.insert(merged.id)
-            }
-
-            return merged
         }
 
         leases.append(lease)
-
-        leaseLifecycleRecorder?(
-            .leaseGranted(
-                .init(
-                    leaseID: lease.id,
-                    targetID: lease.targetID,
-                    requestID: lease.requestID,
-                    startAt: lease.startAt,
-                    expiresAt: lease.expiresAt,
-                    at: now
+        return (
+            lease,
+            [
+                .leaseGranted(
+                    .init(
+                        leaseID: lease.id,
+                        targetID: lease.targetID,
+                        requestID: lease.requestID,
+                        startAt: lease.startAt,
+                        expiresAt: lease.expiresAt,
+                        at: now
+                    )
                 )
-            )
+            ]
         )
-
-        if lease.isActive(at: now) {
-            activeLeaseIDs.insert(lease.id)
-        }
-
-        return lease
     }
 
     /// Reconciles which leases are expired as of `now`.
@@ -139,9 +146,23 @@ public struct UnlockLeaseManager: Codable, Hashable {
     /// - Returns the targetIDs whose leases newly expired since the last
     ///   reconciliation, so callers can reshield those targets.
     public mutating func reconcileExpiry(now: Date = Date()) -> [UUID] {
+        let (reshieldedTargetIDs, _) = reconcileExpiryWithLifecycleEvents(now: now)
+        return reshieldedTargetIDs
+    }
+
+    /// Reconciles which leases are expired as of `now` and returns lifecycle telemetry.
+    ///
+    /// Lifecycle event ordering: one `leaseExpired` per newly-expired lease (in
+    /// order of original lease index), followed by exactly one aggregated
+    /// `leaseReshielded` per reconciliation call.
+    ///
+    /// Backwards time (clock skew): reconciliation is idempotent; emit no events.
+    public mutating func reconcileExpiryWithLifecycleEvents(
+        now: Date = Date()
+    ) -> (reshieldedTargetIDs: [UUID], events: [UnlockLeaseLifecycleEvent]) {
         // Backwards time (clock skew): keep state stable and emit nothing.
         if let last = lastReconcileAt, now < last {
-            return []
+            return ([], [])
         }
 
         let stillActive = leases.filter { $0.isActive(at: now) }
@@ -149,47 +170,37 @@ public struct UnlockLeaseManager: Codable, Hashable {
 
         let newlyExpiredIDs = activeLeaseIDs.subtracting(stillActiveIDs)
         let newlyExpiredLeases = leases.filter { newlyExpiredIDs.contains($0.id) }
+        let reshieldTargetIDs = Array(Set(newlyExpiredLeases.map { $0.targetID }))
 
-        let reshieldTargetIDsSet = Set(newlyExpiredLeases.map { $0.targetID })
-        let reshieldTargetIDs = reshieldTargetIDsSet
-            .sorted { $0.uuidString < $1.uuidString }
-
+        // Apply state updates before building events so return values are
+        // consistent with the new state.
         leases = stillActive
         activeLeaseIDs = stillActiveIDs
         lastReconcileAt = now
 
-        if let recorder = leaseLifecycleRecorder, !newlyExpiredLeases.isEmpty {
-            let expiredLeasesOrdered = newlyExpiredLeases
-                .sorted {
-                    $0.expiresAt < $1.expiresAt ||
-                    ($0.expiresAt == $1.expiresAt && $0.id.uuidString < $1.id.uuidString)
-                }
+        guard !newlyExpiredLeases.isEmpty else {
+            return ([], [])
+        }
 
-            for expired in expiredLeasesOrdered {
-                recorder(
-                    .leaseExpired(
-                        .init(
-                            leaseID: expired.id,
-                            targetID: expired.targetID,
-                            requestID: expired.requestID,
-                            startAt: expired.startAt,
-                            expiresAt: expired.expiresAt,
-                            at: now
-                        )
-                    )
-                )
-            }
-
-            recorder(
-                .leaseReshielded(
+        var events: [UnlockLeaseLifecycleEvent] = []
+        for lease in newlyExpiredLeases {
+            events.append(
+                .leaseExpired(
                     .init(
-                        reshieldTargetIDs: reshieldTargetIDs,
+                        leaseID: lease.id,
+                        targetID: lease.targetID,
+                        requestID: lease.requestID,
+                        startAt: lease.startAt,
+                        expiresAt: lease.expiresAt,
                         at: now
                     )
                 )
             )
         }
 
-        return reshieldTargetIDs
+        // Exactly one reshield event per reconciliation call (aggregated).
+        events.append(.leaseReshielded(.init(reshieldTargetIDs: reshieldTargetIDs, at: now)))
+
+        return (reshieldTargetIDs, events)
     }
 }

@@ -17,6 +17,7 @@ public struct ShieldInterceptionView: View {
 
     public let nfcEnforcer: NfcRuntimeEnforcer?
     public let onNfcViolation: ((NfcViolation) -> Void)?
+    private let funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)?
 
     @State private var mode: Mode = .shield
 
@@ -24,12 +25,14 @@ public struct ShieldInterceptionView: View {
         target: BlockedTarget,
         evidenceRequired: Bool,
         onDecision: ((UnlockDecision) -> Void)? = nil,
-        nfcEnforcer: NfcRuntimeEnforcer? = nil
+        nfcEnforcer: NfcRuntimeEnforcer? = nil,
+        funnelMetricsRecorder: (any RequestFunnelMetricsRecorder)? = nil
     ) {
         self.target = target
         self.evidenceRequired = evidenceRequired
         self.onDecision = onDecision
         self.nfcEnforcer = nfcEnforcer
+        self.funnelMetricsRecorder = funnelMetricsRecorder
     }
 
     public var body: some View {
@@ -48,7 +51,8 @@ public struct ShieldInterceptionView: View {
                 evidenceRequired: evidenceRequired,
                 target: target,
                 onDecision: onDecision,
-                nfcEnforcer: nfcEnforcer
+                nfcEnforcer: nfcEnforcer,
+                funnelMetricsRecorder: funnelMetricsRecorder
             )
 
             UnlockRequestFlowView(coordinator: coordinator)
